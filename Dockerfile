@@ -16,8 +16,11 @@ RUN pnpm install --frozen-lockfile
 
 COPY . .
 
+WORKDIR /app/typescript/packages/x402
 RUN pnpm build
-RUN pnpm --filter=x402 build
+
+WORKDIR /app
+RUN pnpm build
 
 FROM node:20-alpine
 
