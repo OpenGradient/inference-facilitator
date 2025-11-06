@@ -1,4 +1,4 @@
-name: Deploy Server to AWS
+name: Deploy to AWS
 
 on:
   workflow_dispatch:
@@ -11,10 +11,8 @@ jobs:
 
     env:
       ECS_CLUSTER: MemChat
-      ECS_SERVICE: mem-api
-      ECS_CELERY_CLUSTER: MemChat
-      ECS_CELERY_SERVICE: memapi-redis-celery
-      ECR_REPOSITORY: memchat/mem-api
+      ECS_SERVICE: facilitator-x402
+      ECR_REPOSITORY: memchat/facilitator-x402
       IMAGE_TAG: latest
       AWS_REGION: us-east-2
 
@@ -37,16 +35,21 @@ jobs:
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f ./server/dev.Dockerfile .
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           echo "Docker image successfully pushed to ECR!"
 
       - name: Force new deployment on Amazon ECS
         run: |
           aws ecs update-service --cluster $ECS_CLUSTER --service $ECS_SERVICE --force-new-deployment > /dev/null
-          aws ecs update-service --cluster $ECS_CELERY_CLUSTER --service $ECS_CELERY_SERVICE --force-new-deployment > /dev/null
           echo "New ECS deployment started!"
 
       - name: AWS LINKS TO VIEW DEPLOYMENT
         run: |
-          echo "View deployment progress here - https://us-east-2.console.aws.amazon.com/ecs/v2/clusters/MemSync/services/mem-api/tasks?region=us-east-2"
+          echo "View deployment progress here - https://us-east-2.console.aws.amazon.com/ecs/v2/clusters/MemChat/services/facilitator-x402/tasks?region=us-east-2"
+
+      - name: Wait for ECS service to stabilize
+        run: |
+          echo "Waiting for ECS service to stabilize..."
+          aws ecs wait services-stable --cluster $ECS_CLUSTER --services $ECS_SERVICE
+          echo "✅ ECS service is now stable and deployment is complete!"
