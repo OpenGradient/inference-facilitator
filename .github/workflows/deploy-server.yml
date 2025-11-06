@@ -1,0 +1,52 @@
+name: Deploy Server to AWS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    name: Build and Deploy
+    runs-on: ubuntu-latest
+    environment: production
+
+    env:
+      ECS_CLUSTER: MemChat
+      ECS_SERVICE: mem-api
+      ECS_CELERY_CLUSTER: MemChat
+      ECS_CELERY_SERVICE: memapi-redis-celery
+      ECR_REPOSITORY: memchat/mem-api
+      IMAGE_TAG: latest
+      AWS_REGION: us-east-2
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image to Amazon ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f ./server/dev.Dockerfile .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          echo "Docker image successfully pushed to ECR!"
+
+      - name: Force new deployment on Amazon ECS
+        run: |
+          aws ecs update-service --cluster $ECS_CLUSTER --service $ECS_SERVICE --force-new-deployment > /dev/null
+          aws ecs update-service --cluster $ECS_CELERY_CLUSTER --service $ECS_CELERY_SERVICE --force-new-deployment > /dev/null
+          echo "New ECS deployment started!"
+
+      - name: AWS LINKS TO VIEW DEPLOYMENT
+        run: |
+          echo "View deployment progress here - https://us-east-2.console.aws.amazon.com/ecs/v2/clusters/MemSync/services/mem-api/tasks?region=us-east-2"
