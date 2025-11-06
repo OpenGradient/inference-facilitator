@@ -11,7 +11,7 @@ jobs:
 
     env:
       ECS_CLUSTER: MemChat
-      ECS_SERVICE: facilitator-x402
+      ECS_SERVICE: memchat-facilitator-x402
       ECR_REPOSITORY: memchat/facilitator-x402
       IMAGE_TAG: latest
       AWS_REGION: us-east-2
