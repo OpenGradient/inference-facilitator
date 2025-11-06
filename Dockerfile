@@ -16,7 +16,8 @@ RUN pnpm install --frozen-lockfile
 
 COPY . .
 
-RUN pnpm --filter=facilitator-x402 --filter=x402 build
+RUN pnpm build
+RUN pnpm --filter=x402 build
 
 FROM node:20-alpine
 
