@@ -8,6 +8,9 @@ RUN npm install -g pnpm@${PNPM_VERSION} && \
 
 WORKDIR /app
 
+ARG NODE_OPTIONS=--max-old-space-size=3048
+ARG NODE_ENV=production
+
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY typescript/package.json ./typescript/
 COPY typescript/packages/x402/package.json ./typescript/packages/x402/
