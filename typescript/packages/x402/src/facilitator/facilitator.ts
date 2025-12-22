@@ -1,4 +1,4 @@
-import { verify as verifyExactEvm, settle as settleExactEvm } from "../schemes/exact/evm";
+import { verify as verifyExactEvm, settle as settleExactEvm, settleRelay, settleWithMetadataRelay, batchSettleRelay } from "../schemes/exact/evm";
 import { verify as verifyExactSvm, settle as settleExactSvm } from "../schemes/exact/svm";
 import { SupportedEVMNetworks, SupportedSVMNetworks } from "../types/shared";
 import { X402Config } from "../types/config";
@@ -14,8 +14,12 @@ import {
   VerifyResponse,
   ExactEvmPayload,
 } from "../types/verify";
-import { Chain, Transport, Account } from "viem";
+import { Chain, Transport, Account, Hex } from "viem";
 import { TransactionSigner } from "@solana/kit";
+import { PaymentQueue } from "./queue";
+import { createSigner, isEvmSignerWallet } from "../types/shared/wallet";
+import { settlementContractType } from "../types/shared/evm/settlement";
+
 
 /**
  * Verifies a payment payload against the required payment details regardless of the scheme
@@ -69,17 +73,53 @@ export async function verify<
   };
 }
 
+
 /**
- * Settles a payment payload against the required payment details regardless of the scheme
- * this function wraps all settle functions for each specific scheme
- *
- * @param client - The signer wallet used for blockchain interactions
- * @param payload - The signed payment payload containing transfer parameters and signature
- * @param paymentRequirements - The payment requirements that the payload must satisfy
- * @param config - Optional configuration for X402 operations (e.g., custom RPC URLs)
- * @returns A SettleResponse indicating if the payment is settled and any settlement reason
+ * Settles a payment payload.
+ * If Redis is configured, queues the request.
+ * Otherwise, processes it immediately.
  */
 export async function settle<transport extends Transport, chain extends Chain>(
+  client: Signer,
+  payload: PaymentPayload,
+  paymentRequirements: PaymentRequirements,
+  config?: X402Config,
+): Promise<SettleResponse> {
+  if (config?.redis) {
+    const queue = PaymentQueue.getInstance(config.redis);
+    try {
+      const jobId = await queue.enqueue(payload, paymentRequirements);
+
+      return {
+        success: true,
+        transaction: jobId, // Return Job ID as transaction reference
+        network: paymentRequirements.network,
+        payer: SupportedEVMNetworks.includes(paymentRequirements.network)
+          ? (payload.payload as ExactEvmPayload).authorization.from
+          : "",
+        status: "queued"
+      };
+    } catch (e) {
+      console.error("Failed to enqueue payment:", e);
+      return {
+        success: false,
+        errorReason: "unexpected_settle_error",
+        transaction: "",
+        network: paymentRequirements.network
+      }
+    }
+  }
+
+  return await processSettlement(client, payload, paymentRequirements, config);
+}
+
+
+
+
+/**
+ * Internal function to process settlement immediately (bypassing queue).
+ */
+export async function processSettlement<transport extends Transport, chain extends Chain>(
   client: Signer,
   payload: PaymentPayload,
   paymentRequirements: PaymentRequirements,
@@ -126,3 +166,100 @@ export type Supported = {
     extra: object;
   }[];
 };
+
+
+/**
+ * Settles a payload by calling the smart contract.
+ * If Redis is configured, queues the request.
+ */
+export async function settlePayload(
+  client: Signer,
+  data: {
+    network: string;
+    inputHash: string;
+    outputHash: string;
+    msg: string;
+    settlement_type: string;
+  },
+  config?: X402Config
+): Promise<{ success: boolean; transaction?: string; error?: string }> {
+  if (config?.redis) {
+    const queue = PaymentQueue.getInstance(config.redis);
+    try {
+
+      console.log("Enqueuing payload settlement job:", data);
+      const jobId = await queue.enqueuePayload(
+        data.network,
+        data.inputHash,
+        data.outputHash,
+        data.msg,
+        data.settlement_type,
+      );
+
+      console.log("Enqueued payload settlement job:", jobId);
+      return { success: true, transaction: jobId };
+    } catch (e) {
+      console.error("Failed to enqueue payload settlement:", e);
+      return { success: false, error: "failed_to_enqueue" };
+    }
+  }
+
+  return await processSettlePayload(client, data);
+}
+
+/**
+ * Internal function to process payload settlement immediately.
+ */
+export async function processSettlePayload(
+  client: Signer,
+  data: {
+    network: string;
+    inputHash: string;
+    outputHash: string;
+    msg: string;
+    settlement_type: string;
+    // optional field for batching
+    root?: string;
+    size?: bigint;
+    modelType?: string;
+  }): Promise<SettleResponse> {
+  try {
+    const CONTRACT_ADDRESS = process.env.X402_SETTLEMENT_CONTRACT as `0x${string}`;
+
+    if (data.settlement_type == "settle") {
+      return await settleRelay(
+        client as EvmSignerWallet<Chain, Transport>,
+        data.network,
+        CONTRACT_ADDRESS,
+        data.inputHash as Hex,
+        data.outputHash as Hex,
+      );
+    } else if (data.settlement_type == "settle-metadata") {
+      return await settleWithMetadataRelay(
+        client as EvmSignerWallet<Chain, Transport>,
+        data.network,
+        CONTRACT_ADDRESS,
+        data.inputHash as Hex,
+        data.outputHash as Hex,
+        data.modelType as string,
+        "0x" as Hex,
+        "0x" as Hex
+      );
+    } else if (data.settlement_type == "settle-batch") {
+      if (!data.root || data.size === undefined) throw new Error("Missing root or size for batch settlement");
+      return await batchSettleRelay(
+        client as EvmSignerWallet<Chain, Transport>,
+        data.network,
+        CONTRACT_ADDRESS,
+        data.root as Hex,
+        data.size,
+      );
+    } else {
+      throw new Error("Invalid settlement type");
+    }
+  }
+  catch (e) {
+    console.error("Failed to settle payload:", e);
+    throw e;
+  }
+}

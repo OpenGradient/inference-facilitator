@@ -16,6 +16,8 @@ import {
   ExactEvmPayload,
 } from "../../../types/verify";
 import { SCHEME } from "../../exact";
+import { settlementContractType } from "../../../types/shared/evm/settlement";
+import { Network } from "../../../types";
 
 /**
  * Verifies a payment payload against the required payment details
@@ -239,3 +241,123 @@ export async function settle<transport extends Transport, chain extends Chain>(
     payer: payload.authorization.from,
   };
 }
+
+/**
+ * Settles a relay payload by calling the settlement contract.
+ */
+export async function settleRelay<transport extends Transport, chain extends Chain>(
+  wallet: SignerWallet<chain, transport>,
+  network: string,
+  contractAddress: Address,
+  inputHash: Hex,
+  outputHash: Hex,
+): Promise<SettleResponse> {
+  const tx = await wallet.writeContract({
+    address: contractAddress,
+    abi: settlementContractType,
+    functionName: "settle",
+    args: [inputHash, outputHash],
+    chain: wallet.chain as Chain,
+  });
+
+  const receipt = await wallet.waitForTransactionReceipt({ hash: tx });
+
+  if (receipt.status !== "success") {
+    return {
+      success: false,
+      errorReason: "invalid_transaction_state", //`Transaction failed`,
+      transaction: tx,
+      network: network as Network,
+      payer: wallet.account.address,
+    };
+  }
+
+  return {
+    success: true,
+    transaction: tx,
+    network: network as Network,
+    payer: wallet.account.address,
+  };
+}
+
+/**
+ * Batch settles relay payloads by calling the settlement contract.
+ */
+export async function batchSettleRelay<transport extends Transport, chain extends Chain>(
+  wallet: SignerWallet<chain, transport>,
+  network: string,
+  contractAddress: Address,
+  merkleRoot: Hex,
+  batchSize: bigint,
+): Promise<SettleResponse> {
+  const tx = await wallet.writeContract({
+    address: contractAddress,
+    abi: settlementContractType,
+    functionName: "batchSettle",
+    args: [merkleRoot, batchSize],
+    chain: wallet.chain as Chain,
+  });
+
+  const receipt = await wallet.waitForTransactionReceipt({ hash: tx });
+
+  if (receipt.status !== "success") {
+    return {
+      success: false,
+      errorReason: "invalid_transaction_state",
+      transaction: tx,
+      network: network as Network,
+      payer: wallet.account.address,
+    };
+  }
+
+  return {
+    success: true,
+    transaction: tx,
+    network: network as Network,
+    payer: wallet.account.address,
+  };
+}
+
+/**
+ * Settles a relay payload with metadata by calling the settlement contract.
+ */
+export async function settleWithMetadataRelay<transport extends Transport, chain extends Chain>(
+  wallet: SignerWallet<chain, transport>,
+  network: string,
+  contractAddress: Address,
+  inputHash: Hex,
+  outputHash: Hex,
+  modelInfo: string,
+  inputData: Hex,
+  outputData: Hex,
+): Promise<SettleResponse> {
+
+  const tx = await wallet.writeContract({
+    address: contractAddress,
+    abi: settlementContractType,
+    functionName: "settleWithMetadata",
+    args: [inputHash, outputHash, modelInfo, inputData, outputData],
+    chain: wallet.chain as Chain,
+  });
+
+  const receipt = await wallet.waitForTransactionReceipt({ hash: tx });
+
+  if (receipt.status !== "success") {
+    return {
+      success: false,
+      errorReason: "invalid_transaction_state",
+      transaction: tx,
+      network: network as Network,
+      payer: wallet.account.address,
+    };
+  }
+
+  return {
+    success: true,
+    transaction: tx,
+    network: network as Network,
+    payer: wallet.account.address,
+  };
+}
+
+

@@ -202,8 +202,9 @@ export const SettleResponseSchema = z.object({
   success: z.boolean(),
   errorReason: z.enum(ErrorReasons).optional(),
   payer: EvmOrSvmAddress.optional(),
-  transaction: z.string().regex(MixedAddressRegex),
+  transaction: z.string().regex(MixedAddressRegex).or(z.string()), // Relax regex to allow job IDs if needed, or ensure job IDs match regex
   network: NetworkSchema,
+  status: z.enum(["queued", "settled"]).optional(),
 });
 export type SettleResponse = z.infer<typeof SettleResponseSchema>;
 

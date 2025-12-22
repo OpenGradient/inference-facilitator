@@ -1,7 +1,8 @@
 /* eslint-env node */
 import { config } from "dotenv";
 import express, { Request, Response } from "express";
-import { verify, settle } from "x402/facilitator";
+import { verify, settle, startWorker, settlePayload } from "x402/facilitator";
+
 import {
   PaymentRequirementsSchema,
   type PaymentRequirements,
@@ -29,10 +30,16 @@ if (!EVM_PRIVATE_KEY && !SVM_PRIVATE_KEY) {
   process.exit(1);
 }
 
-// Create X402 config with custom RPC URL if provided
-const x402Config: X402Config | undefined = SVM_RPC_URL
-  ? { svmConfig: { rpcUrl: SVM_RPC_URL } }
-  : undefined;
+// Create X402 config
+const x402Config: X402Config = {
+  svmConfig: SVM_RPC_URL ? { rpcUrl: SVM_RPC_URL } : undefined,
+  redis: process.env.REDIS_HOST
+    ? {
+      host: process.env.REDIS_HOST,
+      port: process.env.REDIS_PORT ? parseInt(process.env.REDIS_PORT, 10) : 6379,
+    }
+    : undefined,
+};
 
 const app = express();
 
@@ -48,6 +55,7 @@ type SettleRequest = {
   paymentPayload: PaymentPayload;
   paymentRequirements: PaymentRequirements;
 };
+
 
 app.get("/verify", (req: Request, res: Response) => {
   res.json({
@@ -131,6 +139,13 @@ app.get("/supported", async (req: Request, res: Response) => {
 app.post("/settle", async (req: Request, res: Response) => {
   try {
     const body: SettleRequest = req.body;
+
+    // get headers from req
+    const headers = req.headers;
+    const inputHash = headers["x-input-hash"] as string;
+    const outputHash = headers["x-output-hash"] as string;
+    const settlementType = headers["x-settlement-type"] as string;
+
     const paymentRequirements = PaymentRequirementsSchema.parse(body.paymentRequirements);
     const paymentPayload = PaymentPayloadSchema.parse(body.paymentPayload);
 
@@ -144,8 +159,18 @@ app.post("/settle", async (req: Request, res: Response) => {
       throw new Error("Invalid network");
     }
 
-    // settle
+    // settle payment
     const response = await settle(signer, paymentPayload, paymentRequirements, x402Config);
+    // settle input and output
+    const settlement_data = {
+      network: paymentRequirements.network,
+      inputHash,
+      outputHash,
+      msg: "",
+      settlement_type: settlementType,
+    }
+    const payload_resp = await settlePayload(signer, settlement_data, x402Config);
+
     res.json(response);
   } catch (error) {
     console.error("error", error);
@@ -153,6 +178,23 @@ app.post("/settle", async (req: Request, res: Response) => {
   }
 });
 
+
 app.listen(process.env.PORT || 3000, () => {
   console.log(`Server listening at http://localhost:${process.env.PORT || 3000}`);
+
+  if (x402Config.redis) {
+    startWorker(async (network: string) => {
+      const netAny = network as any;
+      console.log(`Worker processing network: ${netAny}`);
+
+      if (SupportedEVMNetworks.includes(netAny)) {
+        return createSigner(netAny, EVM_PRIVATE_KEY);
+      } else if (SupportedSVMNetworks.includes(netAny)) {
+        return createSigner(netAny, SVM_PRIVATE_KEY);
+      }
+      throw new Error(`Unsupported network: ${network}`);
+    }, x402Config).catch((err: any) => {
+      console.error("Worker process failed:", err);
+    });
+  }
 });
