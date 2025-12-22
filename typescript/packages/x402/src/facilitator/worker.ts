@@ -148,7 +148,7 @@ async function flushBuffer(
 }
 
 async function uploadToWalrus(data: string): Promise<string> {
-    const PUBLISHER_URL = process.env.WALRUS_PUBLISHER_URL || "https://walrus-mainnet-publisher-1.staketab.org/v1/blobs";
+    const PUBLISHER_URL = process.env.WALRUS_PUBLISHER_URL || "http://localhost:9002/v1/blobs";
     const url = `${PUBLISHER_URL}?epochs=10`;
     console.log(`Uploading batch to Walrus Mainnet: ${PUBLISHER_URL}`);
 

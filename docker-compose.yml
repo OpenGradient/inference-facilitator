@@ -18,6 +18,17 @@ services:
       - redis
     restart: unless-stopped
 
+  publisher:
+    image: mysten/walrus-service:main-arm64
+    container_name: walrus-publisher
+    restart: no
+    ports:
+      - "9002:9002"
+    volumes:
+      - ./walrus_config:/root/.walrus
+    command: >
+      /opt/walrus/bin/walrus publisher --config /root/.walrus/suiconfig.yaml --bind-address 0.0.0.0:9002 --sub-wallets-dir /root/.walrus/
+
   redis:
     image: redis:alpine
     ports:
