@@ -2,8 +2,7 @@ import { Signer } from "../types/shared/wallet";
 import { X402Config } from "../types/config";
 import { PaymentQueue, QueueJob } from "./queue";
 import { processSettlement, processSettlePayload } from "./facilitator";
-import { generateMerkleRoot, getLeaf } from "../schemes/exact/evm/merkle";
-import { Hex } from "viem";
+import { StandardMerkleTree } from "@openzeppelin/merkle-tree";
 
 export async function startWorker(
     getSigner: (network: string) => Promise<Signer>,
@@ -108,15 +107,26 @@ async function flushBuffer(
         const items = batchesByNetwork[network];
         try {
             const client = await getSigner(network);
-            const leaves = items.map(item =>
-                getLeaf(
-                    item.inputHash.startsWith("0x") ? item.inputHash as Hex : `0x${item.inputHash}` as Hex,
-                    item.outputHash.startsWith("0x") ? item.outputHash as Hex : `0x${item.outputHash}` as Hex
-                )
-            );
-            const merkleRoot = generateMerkleRoot(leaves);
+            const values = items.map(item => [
+                item.inputHash.startsWith("0x") ? item.inputHash : `0x${item.inputHash}`,
+                item.outputHash.startsWith("0x") ? item.outputHash : `0x${item.outputHash}`
+            ]);
+            const tree = StandardMerkleTree.of(values, ["bytes32", "bytes32"]);
+            const merkleRoot = tree.root;
 
             console.log(`Settling buffered batch for ${network}, size: ${items.length}, root: ${merkleRoot}`);
+
+            // walrus blob upload
+            try {
+                const treeData = JSON.stringify(tree.dump());
+                const blobId = await uploadToWalrus(treeData);
+
+                console.log(`Batch Data uploaded to Walrus. Blob ID: ${blobId}`);
+                console.log(`Explorer: https://walruscan.com/mainnet/blob/${blobId}`);
+                console.log(`Aggregator: https://aggregator.suicore.com/v1/blobs/${blobId}`);
+            } catch (uploadError) {
+                console.error("Failed to upload to Walrus (continuing with settlement):", uploadError);
+            }
 
             const result = await processSettlePayload(
                 client,
@@ -134,5 +144,35 @@ async function flushBuffer(
         } catch (e) {
             console.error(`Failed to settle batch for network ${network}:`, e);
         }
+    }
+}
+
+async function uploadToWalrus(data: string): Promise<string> {
+    const PUBLISHER_URL = process.env.WALRUS_PUBLISHER_URL || "https://walrus-mainnet-publisher-1.staketab.org/v1/blobs";
+    const url = `${PUBLISHER_URL}?epochs=10`;
+    console.log(`Uploading batch to Walrus Mainnet: ${PUBLISHER_URL}`);
+
+    const response = await fetch(url, {
+        method: "PUT",
+        body: data,
+        headers: {
+            "Content-Type": "application/json"
+        }
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Walrus Mainnet upload failed (${response.status}): ${errorText}`);
+    }
+
+    const result = await response.json()
+
+    if (result.newlyCreated) {
+        return result.newlyCreated.blobObject.blobId;
+    } else if (result.alreadyCertified) {
+        console.log("Blob already exists on Walrus (deduplicated).");
+        return result.alreadyCertified.blobId;
+    } else {
+        throw new Error("Unexpected response format from Walrus Publisher");
     }
 }
