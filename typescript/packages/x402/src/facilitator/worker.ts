@@ -1,6 +1,7 @@
 import { Signer } from "../types/shared/wallet";
 import { X402Config } from "../types/config";
 import { PaymentQueue, QueueJob } from "./queue";
+import { metrics } from "./metrics";
 import { processSettlement, processSettlePayload } from "./facilitator";
 import { StandardMerkleTree } from "@openzeppelin/merkle-tree";
 
@@ -45,6 +46,22 @@ export async function startWorker(
                         job.requirements,
                         startWorkerConfig,
                     );
+
+                    metrics.increment("settlements.processed", {
+                        status: result.success ? "success" : "failure",
+                        network: job.requirements.network,
+                        kind: "single"
+                    });
+
+                    const tokenAmount = parseFloat(job.requirements.maxAmountRequired);
+                    if (!isNaN(tokenAmount)) {
+                        const assetTag = typeof job.requirements.asset === 'string' ? job.requirements.asset : (job.requirements.asset as any).address || 'unknown';
+                        metrics.histogram("tokens.paid", tokenAmount, {
+                            asset: assetTag,
+                            network: job.requirements.network
+                        });
+                    }
+
                     console.log(`Job ${job.id} settled: ${result.success} ${result.transaction}`);
                 } else if (job.type === 'payload') {
                     // Check if this is a candidate for batching
@@ -76,6 +93,13 @@ export async function startWorker(
                                 msg: job.msg,
                                 settlement_type: job.settlement_type,
                             });
+
+                        metrics.increment("settlements.processed", {
+                            status: result.success ? "success" : "failure",
+                            network: job.network,
+                            kind: "single_with_metadata"
+                        });
+
                         console.log(`Job ${job.id} payload settled: ${result.success} ${result.transaction}`);
                     }
                 }
@@ -140,6 +164,21 @@ async function flushBuffer(
                     size: BigInt(items.length)
                 } as any
             );
+
+            metrics.increment("settlements.processed", {
+                status: result.success ? "success" : "failure",
+                network: network,
+                kind: "batch"
+            });
+            metrics.gauge("batch.size", items.length, { network: network });
+
+            if (result.success) {
+                metrics.incrementBy("settlements.items_processed", items.length, {
+                    network: network,
+                    kind: "batch_item"
+                });
+            }
+
             console.log(`Batch settled: ${result.success} ${result.transaction}`);
         } catch (e) {
             console.error(`Failed to settle batch for network ${network}:`, e);

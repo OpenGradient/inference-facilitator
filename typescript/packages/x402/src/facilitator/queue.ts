@@ -2,6 +2,7 @@ import Redis from "ioredis";
 import { PaymentPayload, PaymentRequirements } from "../types/verify";
 import { RedisConfig } from "../types/config";
 import { PaymentPayloadSchema, PaymentRequirementsSchema } from "../types/verify/x402Specs";
+import { metrics } from "./metrics";
 
 
 export interface BaseJob {
@@ -66,6 +67,9 @@ export class PaymentQueue {
 
         // We store the full job data in the list
         await this.redis.rpush(this.key, JSON.stringify(job));
+
+        metrics.increment("payment_requests_received", { type: "payment", network: requirements.network });
+
         return id;
     }
 
@@ -93,6 +97,9 @@ export class PaymentQueue {
 
         // We store the full job data in the list
         await this.redis.rpush(this.key, JSON.stringify(job));
+
+        metrics.increment("payment_requests_received", { type: "payload", network });
+
         return id;
     }
 
