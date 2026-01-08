@@ -298,7 +298,7 @@ export async function batchSettleRelay<transport extends Transport, chain extend
     chain: wallet.chain as Chain,
   });
 
-  const receipt = await wallet.waitForTransactionReceipt({ hash: tx });
+  const receipt = await wallet.waitForTransactionReceipt({ hash: tx , timeout: 300000});
 
   if (receipt.status !== "success") {
     return {
