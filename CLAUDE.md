@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is an x402 Payment Protocol facilitator service that handles payment verification and settlement for blockchain-based payments. It supports both EVM (Ethereum-based) and SVM (Solana-based) networks.
+This is a fork of the x402 facilitator service customized for the OpenGradient network, with added support for LLM TEE (Trusted Execution Environment) inference settlement. It handles payment verification/settlement plus on-chain recording of LLM inference input/output hashes for verifiable AI.
 
 ## Build & Development Commands
 
@@ -49,15 +49,21 @@ make docker-run    # Run Docker container
 - Express.js server with `/verify`, `/settle`, `/supported` endpoints
 - Validates payment payloads using Zod schemas
 - Routes requests to appropriate EVM or SVM handlers based on network
+- Settles LLM inference hashes via `settlePayload()` when `x-input-hash`/`x-output-hash` headers present
 - Optional Redis integration for async payment processing via worker queue
 
 **x402 Package** (`typescript/packages/x402/`):
-- `src/facilitator/` - Payment verification (`verify`) and settlement (`settle`) logic
+- `src/facilitator/` - Payment verification (`verify`), settlement (`settle`), and `settlePayload` for LLM hashes
+- `src/facilitator/queue.ts` - Redis-based job queue for async settlement
+- `src/facilitator/worker.ts` - Worker that processes queue, supports batch settlement with Merkle trees
 - `src/schemes/exact/evm/` - EVM-specific payment implementation using viem
 - `src/schemes/exact/svm/` - Solana-specific payment implementation using @solana/kit
 - `src/types/` - TypeScript types and Zod validation schemas
 - `src/client/` - Client-side payment header creation
-- `src/paywall/` - UI components for wallet connection and payments
+
+**Settlement Contract** (`contracts/settlement.sol`):
+- `SettlementRelay` contract for on-chain inference settlement
+- Emits `Settlement`, `SettlementWithMetadata`, and `BatchSettlement` events
 
 ### Key Imports Pattern
 
@@ -80,10 +86,16 @@ Required (at least one):
 - `EVM_PRIVATE_KEY` - Ethereum private key (0x-prefixed)
 - `SVM_PRIVATE_KEY` - Solana private key (base58 encoded)
 
+Required for LLM settlement:
+- `X402_SETTLEMENT_CONTRACT` - Settlement contract address on OpenGradient
+
 Optional:
 - `PORT` - Server port (default: 3000)
 - `SVM_RPC_URL` - Custom Solana RPC URL
 - `REDIS_HOST` / `REDIS_PORT` - Enable async payment processing
+- `SETTLEMENT_BATCH_SIZE` - Batch size before flushing (default: 20)
+- `SETTLEMENT_BATCH_TIMEOUT` - Batch timeout in ms (default: 60000)
+- `WALRUS_PUBLISHER_URL` - Walrus publisher for batch data storage
 
 ## Supported Networks
 
