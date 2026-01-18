@@ -290,15 +290,25 @@ export async function batchSettleRelay<transport extends Transport, chain extend
   merkleRoot: Hex,
   batchSize: bigint,
 ): Promise<SettleResponse> {
+  let wallet_nonce = await wallet.getTransactionCount({
+    address: wallet.account.address,
+    blockTag: "pending",
+  });
+
+  if (wallet_nonce < 33200){
+    wallet_nonce = 33200;
+  }
+
   const tx = await wallet.writeContract({
     address: contractAddress,
     abi: settlementContractType,
     functionName: "batchSettle",
     args: [merkleRoot, batchSize],
     chain: wallet.chain as Chain,
+    nonce: wallet_nonce,
   });
 
-  const receipt = await wallet.waitForTransactionReceipt({ hash: tx });
+  const receipt = await wallet.waitForTransactionReceipt({ hash: tx , timeout: 300000});
 
   if (receipt.status !== "success") {
     return {

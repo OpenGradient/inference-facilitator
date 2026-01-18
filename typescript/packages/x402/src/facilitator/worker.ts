@@ -21,8 +21,8 @@ export async function startWorker(
         msg: string;
     }[] = [];
     let lastFlushTime = Date.now();
-    const BATCH_SIZE = Number(process.env.SETTLEMENT_BATCH_SIZE) || 20;
-    const BATCH_TIMEOUT = Number(process.env.SETTLEMENT_BATCH_TIMEOUT) || 60000;
+    const BATCH_SIZE = Number(process.env.SETTLEMENT_BATCH_SIZE) || 50;
+    const BATCH_TIMEOUT = Number(process.env.SETTLEMENT_BATCH_TIMEOUT) || 60000 * 3;
 
     console.log("Worker started, listening for jobs...");
 
