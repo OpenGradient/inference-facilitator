@@ -113,7 +113,7 @@ app.get("/supported", async (req: Request, res: Response) => {
     kinds.push({
       x402Version: 1,
       scheme: "exact",
-      network: "og-devnet",
+      network: "og-evm",
     });
   }
 
@@ -145,6 +145,7 @@ app.post("/settle", async (req: Request, res: Response) => {
     const inputHash = headers["x-input-hash"] as string;
     const outputHash = headers["x-output-hash"] as string;
     const settlementType = headers["x-settlement-type"] as string;
+    const modelType = headers["x-model-type"] as string;
 
     const paymentRequirements = PaymentRequirementsSchema.parse(body.paymentRequirements);
     const paymentPayload = PaymentPayloadSchema.parse(body.paymentPayload);
@@ -162,12 +163,13 @@ app.post("/settle", async (req: Request, res: Response) => {
     // settle payment
     const response = await settle(signer, paymentPayload, paymentRequirements, x402Config);
     // settle input and output
-    const settlement_data = {
+    const settlement_data = { 
       network: paymentRequirements.network,
       inputHash,
       outputHash,
       msg: "",
       settlement_type: settlementType,
+      model_type: modelType,
     }
     const payload_resp = await settlePayload(signer, settlement_data, x402Config);
 

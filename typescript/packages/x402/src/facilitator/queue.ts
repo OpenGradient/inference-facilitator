@@ -21,6 +21,7 @@ export interface SettlePayloadJob extends BaseJob {
     network: string;
     inputHash: string;
     outputHash: string;
+    modelType?: string;
     msg: string;
     settlement_type: string;
 }
@@ -82,6 +83,7 @@ export class PaymentQueue {
         outputHash: string,
         msg: string,
         settlement_type: string,
+        model_type?: string,
     ): Promise<string> {
         const id = Math.random().toString(36).substring(7);
         const job: SettlePayloadJob = {
@@ -92,6 +94,7 @@ export class PaymentQueue {
             outputHash,
             msg,
             settlement_type,
+            modelType: model_type,
             timestamp: Date.now(),
         };
 

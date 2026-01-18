@@ -142,3 +142,5 @@ vite.config.ts.timestamp-*
 
 # walrus config
 walrus_config
+
+.DS_Store

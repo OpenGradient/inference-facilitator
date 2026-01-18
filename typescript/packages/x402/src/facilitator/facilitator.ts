@@ -180,6 +180,7 @@ export async function settlePayload(
     outputHash: string;
     msg: string;
     settlement_type: string;
+    model_type?: string;
   },
   config?: X402Config
 ): Promise<{ success: boolean; transaction?: string; error?: string }> {
@@ -194,6 +195,7 @@ export async function settlePayload(
         data.outputHash,
         data.msg,
         data.settlement_type,
+        data.model_type,
       );
 
       console.log("Enqueued payload settlement job:", jobId);

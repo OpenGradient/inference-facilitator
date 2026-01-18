@@ -90,6 +90,7 @@ export async function startWorker(
                                 network: job.network,
                                 inputHash: job.inputHash,
                                 outputHash: job.outputHash,
+                                modelType: job.modelType,
                                 msg: job.msg,
                                 settlement_type: job.settlement_type,
                             });
@@ -187,7 +188,7 @@ async function flushBuffer(
 }
 
 async function uploadToWalrus(data: string): Promise<string> {
-    const PUBLISHER_URL = process.env.WALRUS_PUBLISHER_URL || "http://localhost:9002/v1/blobs";
+    const PUBLISHER_URL = process.env.WALRUS_PUBLISHER_URL || "https://ogpublisher.opengradient.ai/v1/blobs";
     const url = `${PUBLISHER_URL}?epochs=10`;
     console.log(`Uploading batch to Walrus Mainnet: ${PUBLISHER_URL}`);
 

@@ -229,29 +229,29 @@ export function getChainFromNetwork(network: string | undefined): Chain {
       return iotex;
     case "iotex-testnet":
       return iotexTestnet;
-    case "og-devnet":
-      return ogDevnet;
+    case "og-evm":
+      return ogEvm;
     default:
       throw new Error(`Unsupported network: ${network}`);
   }
 }
 
 
-export const ogDevnet = /*#__PURE__*/ defineChain({
-  id: 10744,
-  name: 'OG Devnet',
+export const ogEvm = /*#__PURE__*/ defineChain({
+  id: 262144,
+  name: 'OG EVM',
   nativeCurrency: {
     decimals: 18,
     name: 'OG',
     symbol: 'OG',
   },
   rpcUrls: {
-    default: { http: ['https://eth-devnet.opengradient.ai/'] },
+    default: { http: ['https://ogevmdevnet.opengradient.ai/'] },
   },
   blockExplorers: {
     default: {
-      name: 'OG Explorer',
-      url: 'https://explorer.og.artela.io',
+      name: 'OG EVM Explorer',
+      url: 'https://explorer.og.artela.io', // TODO: update
     },
   },
   contracts: {
