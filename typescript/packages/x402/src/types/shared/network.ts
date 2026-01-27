@@ -51,7 +51,7 @@ export const EvmNetworkToChainId = new Map<Network, number>([
   ["polygon-amoy", 80002],
   ["peaq", 3338],
   ["story", 1514],
-  ["og-evm", 262144],
+  ["og-evm", 10740],
 ]);
 
 // svm

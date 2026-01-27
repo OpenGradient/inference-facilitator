@@ -238,7 +238,7 @@ export function getChainFromNetwork(network: string | undefined): Chain {
 
 
 export const ogEvm = /*#__PURE__*/ defineChain({
-  id: 262144,
+  id: 10740,
   name: 'OG EVM',
   nativeCurrency: {
     decimals: 18,
