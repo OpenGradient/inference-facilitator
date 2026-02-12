@@ -144,3 +144,5 @@ vite.config.ts.timestamp-*
 walrus_config
 
 .DS_Store
+
+*.turbo/

@@ -1,3 +1,8 @@
 packages:
-  - '.'
-  - 'typescript/packages/x402'
+  - "."
+  - "typescript/packages/core"
+  - "typescript/packages/extensions"
+  - "typescript/packages/mcp"
+  - "typescript/packages/http/*"
+  - "typescript/packages/mechanisms/*"
+  - "typescript/packages/legacy/*"
