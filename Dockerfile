@@ -32,7 +32,11 @@ COPY . .
 
 # Build all packages
 # We assume 'pnpm build' at root builds all workspace packages
-RUN pnpm build
+RUN pnpm --filter @x402/core build && \
+    pnpm --filter @x402/evm build && \
+    pnpm --filter @x402/svm build && \
+    pnpm --filter @x402/extensions build && \
+    pnpm build
 
 # Remove development dependencies
 RUN pnpm prune --prod
