@@ -24,10 +24,11 @@ import { toFacilitatorSvmSigner } from "@x402/svm";
 import { ExactSvmScheme } from "@x402/svm/exact/facilitator";
 import dotenv from "dotenv";
 import express from "express";
+import { randomUUID } from "node:crypto";
+import { createClient, type RedisClientType } from "redis";
 import { createWalletClient, http, publicActions, parseGwei } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { defineChain } from "viem";
-import { f } from "./typescript/packages/extensions/dist/esm/index-DHE9jPAn.mjs";
 import { baseSepolia } from "viem/chains";
 
 const ogEvm = defineChain({
@@ -59,6 +60,81 @@ dotenv.config();
 
 // Configuration
 const PORT = process.env.PORT || "4022";
+const REDIS_URL = process.env.REDIS_URL || "redis://127.0.0.1:6379";
+const SETTLE_QUEUE_KEY = process.env.SETTLE_QUEUE_KEY || "x402:settle:queue";
+const SETTLE_JOB_KEY_PREFIX = process.env.SETTLE_JOB_KEY_PREFIX || "x402:settle:job:";
+const SETTLE_JOB_TTL_SECONDS = Number(process.env.SETTLE_JOB_TTL_SECONDS || 60 * 60 * 24);
+
+type SettleJobStatus = "queued" | "processing" | "succeeded" | "failed";
+
+type SettleJob = {
+  id: string;
+  status: SettleJobStatus;
+  paymentPayload: PaymentPayload;
+  paymentRequirements: PaymentRequirements;
+  createdAt: string;
+  updatedAt: string;
+  result?: SettleResponse;
+  error?: string;
+};
+
+type SettleJobResult = {
+  jobId: string;
+  status: SettleJobStatus;
+  createdAt: string;
+  updatedAt: string;
+  result?: SettleResponse;
+  error?: string;
+};
+
+type SerializedBigInt = {
+  __type: "bigint";
+  value: string;
+};
+
+function serializeJson(value: unknown): string {
+  return JSON.stringify(value, (_key, item) => {
+    if (typeof item === "bigint") {
+      const wrapped: SerializedBigInt = {
+        __type: "bigint",
+        value: item.toString(),
+      };
+      return wrapped;
+    }
+    return item;
+  });
+}
+
+function parseJson<T>(value: string): T {
+  return JSON.parse(value, (_key, item) => {
+    if (
+      item &&
+      typeof item === "object" &&
+      "__type" in item &&
+      (item as SerializedBigInt).__type === "bigint"
+    ) {
+      return BigInt((item as SerializedBigInt).value);
+    }
+    return item;
+  }) as T;
+}
+
+function settleJobKey(jobId: string): string {
+  return `${SETTLE_JOB_KEY_PREFIX}${jobId}`;
+}
+
+function toSettleJobResult(job: SettleJob): SettleJobResult {
+  return {
+    jobId: job.id,
+    status: job.status,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+    result: job.result,
+    error: job.error,
+  };
+}
+
+let isShuttingDown = false;
 
 // Configuration - optional per network
 const evmPrivateKey = process.env.EVM_PRIVATE_KEY as `0x${string}` | undefined;
@@ -97,6 +173,115 @@ const facilitator = new x402Facilitator()
   .onSettleFailure(async context => {
     console.log("Settle failure", context);
   });
+
+const redisClient = createClient({
+  url: REDIS_URL,
+});
+
+const settleWorkerRedis = redisClient.duplicate();
+
+redisClient.on("error", (error: unknown) => {
+  console.error("Redis client error:", error);
+});
+
+settleWorkerRedis.on("error", (error: unknown) => {
+  if (!isShuttingDown) {
+    console.error("Redis settle worker error:", error);
+  }
+});
+
+async function saveSettleJob(job: SettleJob): Promise<void> {
+  console.log("Saving settle job", job);
+  await redisClient.set(settleJobKey(job.id), serializeJson(job), {
+    EX: SETTLE_JOB_TTL_SECONDS,
+  });
+}
+
+async function getSettleJob(jobId: string): Promise<SettleJob | null> {
+
+  const raw = await redisClient.get(settleJobKey(jobId));
+  if (!raw) {
+    return null;
+  }
+  return parseJson<SettleJob>(raw);
+}
+
+async function enqueueSettleJob(
+  paymentPayload: PaymentPayload,
+  paymentRequirements: PaymentRequirements,
+): Promise<SettleJobResult> {
+  console.log("Enqueuing settle job", paymentPayload, paymentRequirements);
+  const now = new Date().toISOString();
+  const job: SettleJob = {
+    id: randomUUID(),
+    status: "queued",
+    paymentPayload,
+    paymentRequirements,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  await saveSettleJob(job);
+  await redisClient.lPush(SETTLE_QUEUE_KEY, job.id);
+
+  return toSettleJobResult(job);
+}
+
+async function settleQueuedJob(jobId: string): Promise<void> {
+  const job = await getSettleJob(jobId);
+  if (!job) {
+    return;
+  }
+
+  console.log("Processing settle job", job);
+
+  const processingJob: SettleJob = {
+    ...job,
+    status: "processing",
+    updatedAt: new Date().toISOString(),
+    error: undefined,
+  };
+  await saveSettleJob(processingJob);
+
+  try {
+    const result = await facilitator.settle(job.paymentPayload, job.paymentRequirements);
+    const completedJob: SettleJob = {
+      ...processingJob,
+      status: "succeeded",
+      updatedAt: new Date().toISOString(),
+      result,
+      error: undefined,
+    };
+    await saveSettleJob(completedJob);
+  } catch (error) {
+    const failedJob: SettleJob = {
+      ...processingJob,
+      status: "failed",
+      updatedAt: new Date().toISOString(),
+      result: undefined,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+    await saveSettleJob(failedJob);
+  }
+}
+
+async function settleWorkerLoop(workerClient: RedisClientType): Promise<void> {
+  while (!isShuttingDown) {
+    try {
+      const popped = await workerClient.brPop(SETTLE_QUEUE_KEY, 0);
+      if (!popped) {
+        continue;
+      }
+
+      await settleQueuedJob(popped.element);
+    } catch (error) {
+      if (isShuttingDown) {
+        return;
+      }
+      console.error("Settle worker loop error:", error);
+    }
+  }
+}
 
 // Register EVM scheme if private key is provided
 if (evmPrivateKey) {
@@ -275,11 +460,14 @@ app.post("/verify", async (req, res) => {
 
 /**
  * POST /settle
- * Settle a payment on-chain
+ * Queue a settlement to process asynchronously
  */
 app.post("/settle", async (req, res) => {
   try {
-    const { paymentPayload, paymentRequirements } = req.body;
+    const { paymentPayload, paymentRequirements } = req.body as {
+      paymentPayload: PaymentPayload;
+      paymentRequirements: PaymentRequirements;
+    };
 
     if (!paymentPayload || !paymentRequirements) {
       return res.status(400).json({
@@ -287,27 +475,32 @@ app.post("/settle", async (req, res) => {
       });
     }
 
-    const response: SettleResponse = await facilitator.settle(
-      paymentPayload as PaymentPayload,
-      paymentRequirements as PaymentRequirements,
-    );
-
-    res.json(response);
+    const queuedJob = await enqueueSettleJob(paymentPayload, paymentRequirements);
+    res.status(202).json(queuedJob);
   } catch (error) {
-    console.error("Settle error:", error);
+    console.error("Settle enqueue error:", error);
+    res.status(500).json({
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+});
 
-    // Check if this was an abort from hook
-    if (
-      error instanceof Error &&
-      error.message.includes("Settlement aborted:")
-    ) {
-      return res.json({
-        success: false,
-        errorReason: error.message.replace("Settlement aborted: ", ""),
-        network: req.body?.paymentPayload?.network || "unknown",
-      } as SettleResponse);
+/**
+ * GET /settle/:jobId
+ * Get queued settlement status or final result
+ */
+app.get("/settle/:jobId", async (req, res) => {
+  try {
+    const job = await getSettleJob(req.params.jobId);
+    if (!job) {
+      return res.status(404).json({
+        error: `Settlement job not found: ${req.params.jobId}`,
+      });
     }
 
+    res.json(toSettleJobResult(job));
+  } catch (error) {
+    console.error("Settle status error:", error);
     res.status(500).json({
       error: error instanceof Error ? error.message : "Unknown error",
     });
@@ -339,8 +532,31 @@ app.get("/health", (req, res) => {
 });
 
 // Start the server
-app.listen(parseInt(PORT), () => {
+async function shutdown(signal: string): Promise<void> {
+  if (isShuttingDown) {
+    return;
+  }
+  isShuttingDown = true;
+  console.log(`\nReceived ${signal}. Shutting down gracefully...`);
+  await Promise.allSettled([settleWorkerRedis.quit(), redisClient.quit()]);
+  process.exit(0);
+}
+
+process.on("SIGINT", () => {
+  void shutdown("SIGINT");
+});
+
+process.on("SIGTERM", () => {
+  void shutdown("SIGTERM");
+});
+
+await redisClient.connect();
+await settleWorkerRedis.connect();
+void settleWorkerLoop(settleWorkerRedis);
+
+app.listen(parseInt(PORT, 10), () => {
   console.log(`🚀 All Networks Facilitator listening on http://localhost:${PORT}`);
   console.log(`   Supported networks: ${facilitator.getSupported().kinds.map(k => k.network).join(", ")}`);
+  console.log(`   Redis settle queue: ${SETTLE_QUEUE_KEY}`);
   console.log();
 });
