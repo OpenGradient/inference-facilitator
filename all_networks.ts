@@ -1,13 +1,3 @@
-/**
- * All Networks Facilitator Example
- *
- * Demonstrates how to create a facilitator that supports all available networks with
- * optional chain configuration via environment variables.
- *
- * New chain support should be added here in alphabetic order by network prefix
- * (e.g., "eip155" before "solana").
- */
-
 import { base58 } from "@scure/base";
 import { createKeyPairSignerFromBytes } from "@solana/kit";
 import { x402Facilitator } from "@x402/core/facilitator";
@@ -25,6 +15,7 @@ import { ExactSvmScheme } from "@x402/svm/exact/facilitator";
 import dotenv from "dotenv";
 import express from "express";
 import { randomUUID } from "node:crypto";
+import { type Server } from "node:http";
 import { createClient, type RedisClientType } from "redis";
 import { createWalletClient, http, publicActions, parseGwei } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -64,6 +55,8 @@ const REDIS_URL = process.env.REDIS_URL || "redis://127.0.0.1:6379";
 const SETTLE_QUEUE_KEY = process.env.SETTLE_QUEUE_KEY || "x402:settle:queue";
 const SETTLE_JOB_KEY_PREFIX = process.env.SETTLE_JOB_KEY_PREFIX || "x402:settle:job:";
 const SETTLE_JOB_TTL_SECONDS = Number(process.env.SETTLE_JOB_TTL_SECONDS || 60 * 60 * 24);
+const SETTLE_WORKER_POLL_SECONDS = Number(process.env.SETTLE_WORKER_POLL_SECONDS || 1);
+const SHUTDOWN_TIMEOUT_MS = Number(process.env.SHUTDOWN_TIMEOUT_MS || 10_000);
 
 type SettleJobStatus = "queued" | "processing" | "succeeded" | "failed";
 
@@ -135,6 +128,7 @@ function toSettleJobResult(job: SettleJob): SettleJobResult {
 }
 
 let isShuttingDown = false;
+let httpServer: Server | null = null;
 
 // Configuration - optional per network
 const evmPrivateKey = process.env.EVM_PRIVATE_KEY as `0x${string}` | undefined;
@@ -268,7 +262,7 @@ async function settleQueuedJob(jobId: string): Promise<void> {
 async function settleWorkerLoop(workerClient: RedisClientType): Promise<void> {
   while (!isShuttingDown) {
     try {
-      const popped = await workerClient.brPop(SETTLE_QUEUE_KEY, 0);
+      const popped = await workerClient.brPop(SETTLE_QUEUE_KEY, SETTLE_WORKER_POLL_SECONDS);
       if (!popped) {
         continue;
       }
@@ -538,7 +532,25 @@ async function shutdown(signal: string): Promise<void> {
   }
   isShuttingDown = true;
   console.log(`\nReceived ${signal}. Shutting down gracefully...`);
-  await Promise.allSettled([settleWorkerRedis.quit(), redisClient.quit()]);
+
+  const forcedExitTimer = setTimeout(() => {
+    console.error(`Forced shutdown after ${SHUTDOWN_TIMEOUT_MS}ms`);
+    process.exit(1);
+  }, SHUTDOWN_TIMEOUT_MS);
+  forcedExitTimer.unref();
+
+  if (httpServer) {
+    await new Promise<void>(resolve => {
+      httpServer!.close(() => resolve());
+    });
+  }
+
+  await Promise.allSettled([
+    Promise.resolve(settleWorkerRedis.disconnect()),
+    Promise.resolve(redisClient.disconnect()),
+  ]);
+
+  clearTimeout(forcedExitTimer);
   process.exit(0);
 }
 
@@ -554,7 +566,7 @@ await redisClient.connect();
 await settleWorkerRedis.connect();
 void settleWorkerLoop(settleWorkerRedis);
 
-app.listen(parseInt(PORT, 10), () => {
+httpServer = app.listen(parseInt(PORT, 10), () => {
   console.log(`🚀 All Networks Facilitator listening on http://localhost:${PORT}`);
   console.log(`   Supported networks: ${facilitator.getSupported().kinds.map(k => k.network).join(", ")}`);
   console.log(`   Redis settle queue: ${SETTLE_QUEUE_KEY}`);
