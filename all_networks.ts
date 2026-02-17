@@ -16,7 +16,7 @@ import dotenv from "dotenv";
 import express from "express";
 import { randomUUID } from "node:crypto";
 import { type Server } from "node:http";
-import { createClient, type RedisClientType } from "redis";
+import { createClient } from "redis";
 import { createWalletClient, http, publicActions, parseGwei } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { defineChain } from "viem";
@@ -259,10 +259,13 @@ async function settleQueuedJob(jobId: string): Promise<void> {
   }
 }
 
-async function settleWorkerLoop(workerClient: RedisClientType): Promise<void> {
+async function settleWorkerLoop(): Promise<void> {
   while (!isShuttingDown) {
     try {
-      const popped = await workerClient.brPop(SETTLE_QUEUE_KEY, SETTLE_WORKER_POLL_SECONDS);
+      const popped = await settleWorkerRedis.brPop(
+        SETTLE_QUEUE_KEY,
+        SETTLE_WORKER_POLL_SECONDS,
+      );
       if (!popped) {
         continue;
       }
@@ -564,7 +567,7 @@ process.on("SIGTERM", () => {
 
 await redisClient.connect();
 await settleWorkerRedis.connect();
-void settleWorkerLoop(settleWorkerRedis);
+void settleWorkerLoop();
 
 httpServer = app.listen(parseInt(PORT, 10), () => {
   console.log(`🚀 All Networks Facilitator listening on http://localhost:${PORT}`);
