@@ -20,7 +20,7 @@ import { createClient } from "redis";
 import { createWalletClient, http, publicActions, parseGwei } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { defineChain } from "viem";
-import { baseSepolia } from "viem/chains";
+import { baseSepolia as defaultBaseSepolia } from "viem/chains";
 
 const ogEvm = defineChain({
   id: 10740,
@@ -52,11 +52,23 @@ dotenv.config();
 // Configuration
 const PORT = process.env.PORT || "4022";
 const REDIS_URL = process.env.REDIS_URL || "redis://127.0.0.1:6379";
+const BASE_SEPOLIA_RPC_URL =
+  process.env.BASE_SEPOLIA_RPC_URL || defaultBaseSepolia.rpcUrls.default.http[0];
 const SETTLE_QUEUE_KEY = process.env.SETTLE_QUEUE_KEY || "x402:settle:queue";
 const SETTLE_JOB_KEY_PREFIX = process.env.SETTLE_JOB_KEY_PREFIX || "x402:settle:job:";
 const SETTLE_JOB_TTL_SECONDS = Number(process.env.SETTLE_JOB_TTL_SECONDS || 60 * 60 * 24);
 const SETTLE_WORKER_POLL_SECONDS = Number(process.env.SETTLE_WORKER_POLL_SECONDS || 1);
 const SHUTDOWN_TIMEOUT_MS = Number(process.env.SHUTDOWN_TIMEOUT_MS || 10_000);
+
+const baseSepolia = defineChain({
+  ...defaultBaseSepolia,
+  rpcUrls: {
+    ...defaultBaseSepolia.rpcUrls,
+    default: { http: [BASE_SEPOLIA_RPC_URL] },
+    public: { http: [BASE_SEPOLIA_RPC_URL] },
+  },
+});
+
 
 type SettleJobStatus = "queued" | "processing" | "succeeded" | "failed";
 
