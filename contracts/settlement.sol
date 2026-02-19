@@ -483,16 +483,20 @@ import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 contract SettlementRelay is Ownable, AccessControl {
     bytes32 public constant SETTLEMENT_RELAY_ROLE = keccak256("SETTLEMENT_RELAY_ROLE");
 
-    event Settlement(bytes32 indexed inputHash, bytes32 indexed outputHash);
-    
-    event BatchSettlement(bytes32 indexed merkleRoot, uint256 batchSize);
-    
-    event SettlementWithMetadata(
-        bytes32 indexed inputHash, 
-        bytes32 indexed outputHash, 
-        string modelInfo,
-        bytes inputData,
-        bytes outputData
+    event BatchSettlement(
+        bytes32 indexed merkleRoot,
+        uint256 batchSize,
+        bytes walrusBlobId
+    );
+
+    event IndividualSettlement(
+        bytes32 indexed teeId,
+        address indexed ethAddress,
+        bytes32 inputHash,
+        bytes32 outputHash,
+        uint256 timestamp,
+        bytes walrusBlobId,
+        bytes signature
     );
 
     constructor() Ownable(msg.sender) {
@@ -502,22 +506,28 @@ contract SettlementRelay is Ownable, AccessControl {
 
     // --- WRITE FUNCTIONS (Only Relay) ---
 
-    function settle(bytes32 _inputHash, bytes32 _outputHash) external onlyRole(SETTLEMENT_RELAY_ROLE) {
-        emit Settlement(_inputHash, _outputHash);
+    function batchSettle(bytes32 _merkleRoot, uint256 _batchSize, bytes calldata _walrusBlobId) external onlyRole(SETTLEMENT_RELAY_ROLE) {
+        emit BatchSettlement(_merkleRoot, _batchSize, _walrusBlobId);
     }
 
-    function batchSettle(bytes32 _merkleRoot, uint256 _batchSize) external onlyRole(SETTLEMENT_RELAY_ROLE) {
-        emit BatchSettlement(_merkleRoot, _batchSize);
-    }
-
-    function settleWithMetadata(
-        bytes32 _inputHash, 
+    function settleIndividual(
+        bytes32 _teeId,
+        bytes32 _inputHash,
         bytes32 _outputHash,
-        string calldata _modelInfo,
-        bytes calldata _inputData,
-        bytes calldata _outputData
+        uint256 _timestamp,
+        address _ethAddress,
+        bytes calldata _walrusBlobId,
+        bytes calldata _signature
     ) external onlyRole(SETTLEMENT_RELAY_ROLE) {
-        emit SettlementWithMetadata(_inputHash, _outputHash, _modelInfo, _inputData, _outputData);
+        emit IndividualSettlement(
+            _teeId,
+            _ethAddress,
+            _inputHash,
+            _outputHash,
+            _timestamp,
+            _walrusBlobId,
+            _signature
+        );
     }
 
     // --- READ / VERIFY FUNCTIONS (Public) ---
