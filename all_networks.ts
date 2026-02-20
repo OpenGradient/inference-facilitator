@@ -307,7 +307,7 @@ if (evmPrivateKey) {
   const baseViemClient = createWalletClient({
     account: evmAccount,
     chain: baseSepolia,
-    transport: http(),
+    transport: http(BASE_SEPOLIA_RPC_URL),
   }).extend(publicActions);
 
   const evmSigner = toFacilitatorEvmSigner({
@@ -386,8 +386,8 @@ if (evmPrivateKey) {
         ...args,
         args: args.args || [],
         gas: 5000000n, // Set a high gas limit (5M) to prevent OOG
-        maxFeePerGas: parseGwei('0.002'), // Example: Set specific gas price if needed
-        maxPriorityFeePerGas: parseGwei('0.001'),
+        maxFeePerGas: parseGwei('0.006'),
+        maxPriorityFeePerGas: parseGwei('0.005'),
       }),
     sendTransaction: (args: { to: `0x${string}`; data: `0x${string}` }) =>
       baseViemClient.sendTransaction({
