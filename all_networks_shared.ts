@@ -576,8 +576,8 @@ export async function createFacilitator(): Promise<x402Facilitator> {
           ...args,
           args: args.args || [],
           gas: 5_000_000n,
-          maxFeePerGas: parseGwei("0.002"),
-          maxPriorityFeePerGas: parseGwei("0.001"),
+          maxFeePerGas: parseGwei("0.006"),
+          maxPriorityFeePerGas: parseGwei("0.005"),
         }),
       sendTransaction: (args: { to: `0x${string}`; data: `0x${string}` }) =>
         baseViemClient.sendTransaction({
