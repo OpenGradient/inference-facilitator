@@ -1,4 +1,5 @@
 import { Worker } from "bullmq";
+import { incrementMetric } from "./metrics.js";
 import {
   createDataWorkerContext,
   createBullMqConnection,
@@ -25,10 +26,12 @@ const worker = new Worker<DataSettlementJobData>(
 );
 
 worker.on("completed", (job: { id?: string }) => {
+  incrementMetric("worker.job.completed.count", ["worker:data"]);
   console.log(`[data-worker] Completed job ${job.id}`);
 });
 
 worker.on("failed", (job: { id?: string } | undefined, err: unknown) => {
+  incrementMetric("worker.job.failed.count", ["worker:data"]);
   console.error(`[data-worker] Failed job ${job?.id ?? "unknown"}:`, err);
 });
 

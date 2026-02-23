@@ -1,4 +1,5 @@
 import { Worker } from "bullmq";
+import { incrementMetric } from "./metrics.js";
 import {
   createBullMqConnection,
   createFacilitator,
@@ -11,11 +12,34 @@ import {
 
 const facilitator = await createFacilitator();
 
+function paymentAmountToMetricValue(amount: string): number | null {
+  const parsed = Number(amount);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 const worker = new Worker<PaymentSettlementJobData>(
   PAYMENT_QUEUE_NAME,
   async (job: { data: PaymentSettlementJobData }) => {
     const { paymentPayload, paymentRequirements } = job.data;
-    return facilitator.settle(paymentPayload, paymentRequirements);
+    const result = await facilitator.settle(paymentPayload, paymentRequirements);
+
+    if (result.success) {
+      const tags = [
+        "worker:payment",
+        `network:${paymentRequirements.network}`,
+        `asset:${paymentRequirements.asset}`,
+        `scheme:${paymentRequirements.scheme}`,
+      ];
+
+      incrementMetric("payment.settled.count", tags);
+
+      const amountValue = paymentAmountToMetricValue(paymentRequirements.amount);
+      if (amountValue !== null) {
+        incrementMetric("payment.settled.amount", tags, amountValue);
+      }
+    }
+
+    return result;
   },
   {
     connection: createBullMqConnection(),
@@ -24,10 +48,12 @@ const worker = new Worker<PaymentSettlementJobData>(
 );
 
 worker.on("completed", (job: { id?: string }) => {
+  incrementMetric("worker.job.completed.count", ["worker:payment"]);
   console.log(`[payment-worker] Completed job ${job.id}`);
 });
 
 worker.on("failed", (job: { id?: string } | undefined, err: unknown) => {
+  incrementMetric("worker.job.failed.count", ["worker:payment"]);
   console.error(`[payment-worker] Failed job ${job?.id ?? "unknown"}:`, err);
 });
 

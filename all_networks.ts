@@ -2,6 +2,7 @@ import { Queue, type Job } from "bullmq";
 import express from "express";
 import { randomUUID } from "node:crypto";
 import { type Server } from "node:http";
+import { incrementMetric } from "./metrics.js";
 import {
   createBullMqConnection,
   createFacilitator,
@@ -132,6 +133,7 @@ async function enqueueDataSettlementJob(args: {
 }
 
 app.post("/verify", async (req, res) => {
+  incrementMetric("api.request.count", ["route:/verify", "method:POST"]);
   try {
     const { paymentPayload, paymentRequirements } = req.body as {
       paymentPayload: PaymentPayload;
@@ -156,6 +158,7 @@ app.post("/verify", async (req, res) => {
 
 
 app.post("/settle", async (req, res) => {
+  incrementMetric("api.request.count", ["route:/settle", "method:POST"]);
   try {
     const { paymentPayload, paymentRequirements } = req.body as {
       paymentPayload: PaymentPayload;
@@ -188,6 +191,7 @@ app.post("/settle", async (req, res) => {
 });
 
 app.post("/settle_data", async (req, res) => {
+  incrementMetric("api.request.count", ["route:/settle_data", "method:POST"]);
   try {
     const settlementTypeHeader = normalizeHeaderValue(req.get("x-settlement-type") || undefined);
     if (!settlementTypeHeader) {
@@ -225,6 +229,7 @@ app.post("/settle_data", async (req, res) => {
 });
 
 app.get("/settle/:jobId", async (req, res) => {
+  incrementMetric("api.request.count", ["route:/settle/:jobId", "method:GET"]);
   try {
     const { jobId } = req.params;
     const hintedQueue = queueNameFromJobId(jobId);
