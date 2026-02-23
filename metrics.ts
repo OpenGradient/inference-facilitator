@@ -2,8 +2,8 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 
-const DOGSTATSD_HOST = process.env.DD_AGENT_HOST || process.env.DOGSTATSD_HOST || "127.0.0.1";
-const DOGSTATSD_PORT = Number(process.env.DD_DOGSTATSD_PORT || process.env.DOGSTATSD_PORT || 8125);
+const DOGSTATSD_HOST = process.env.DD_AGENT_HOST || "127.0.0.1";
+const DOGSTATSD_PORT = Number(process.env.DD_DOGSTATSD_PORT || 8125);
 const METRIC_PREFIX = process.env.DD_METRICS_PREFIX || "x402-facilitator";
 const METRICS_ENABLED = process.env.DD_METRICS_ENABLED !== "false";
 
