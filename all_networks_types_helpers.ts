@@ -42,6 +42,9 @@ export const DATA_SETTLEMENT_BATCH_BUFFER_SIZE = Number(
 export const DATA_SETTLEMENT_BATCH_IDLE_TIMEOUT_MS = Number(
   process.env.DATA_SETTLEMENT_BATCH_IDLE_TIMEOUT_MS || 5 * 60 * 1000,
 );
+export const DATA_SETTLEMENT_BATCH_MAX_AGE_MS = Number(
+  process.env.DATA_SETTLEMENT_BATCH_MAX_AGE_MS || 15 * 60 * 1000,
+);
 
 export type SettlementType = "private" | "batch" | "individual";
 
@@ -321,6 +324,20 @@ export function toBytesCalldata(value: string): `0x${string}` {
     return trimmed as `0x${string}`;
   }
   return toHex(trimmed);
+}
+
+export function base64ToBytesCalldata(value: string): `0x${string}` {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    throw new Error("Invalid teeSignature: empty base64 value");
+  }
+
+  const bytes = Buffer.from(trimmed, "base64");
+  if (bytes.length === 0) {
+    throw new Error("Invalid teeSignature: failed to decode base64");
+  }
+
+  return `0x${bytes.toString("hex")}` as `0x${string}`;
 }
 
 export function isSettlementError(error: unknown): error is Error {

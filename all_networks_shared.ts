@@ -12,8 +12,10 @@ import { createWalletClient, defineChain, http, parseGwei, publicActions, toHex 
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
 import {
+  base64ToBytesCalldata,
   DATA_SETTLEMENT_BATCH_BUFFER_SIZE,
   DATA_SETTLEMENT_BATCH_IDLE_TIMEOUT_MS,
+  DATA_SETTLEMENT_BATCH_MAX_AGE_MS,
   DATA_WORKER_EVM_PRIVATE_KEY_ENV,
   DATA_WORKER_SETTLEMENT_CONTRACT_ENV,
   REDIS_URL,
@@ -55,8 +57,11 @@ const ogEvm = defineChain({
 const DATA_WORKER_SETTLEMENT_GAS_LIMIT = BigInt(
   process.env.DATA_WORKER_SETTLEMENT_GAS_LIMIT || "9000000",
 );
+const DATA_WORKER_TX_RECEIPT_TIMEOUT_MS = Number(
+  process.env.DATA_WORKER_TX_RECEIPT_TIMEOUT_MS || 120_000,
+);
 
-type BatchFlushReason = "buffer-full" | "idle-timeout";
+type BatchFlushReason = "buffer-full" | "idle-timeout" | "max-age-timeout";
 
 type BatchFlushResult = {
   merkleRoot: string;
@@ -77,8 +82,28 @@ type WalrusUploadResponse = {
   };
 };
 
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    timeoutHandle.unref?.();
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  }
+}
+
 let batchSettlementBuffer: SettlementBatchData[] = [];
 let batchSettlementFlushTimer: ReturnType<typeof setTimeout> | null = null;
+let batchSettlementMaxAgeTimer: ReturnType<typeof setTimeout> | null = null;
+let batchSettlementFirstBufferedAtMs: number | null = null;
 let batchFlushInFlight: Promise<BatchFlushResult | null> | null = null;
 
 const settlementContractAbi = [
@@ -152,6 +177,19 @@ function scheduleBatchFlush(context: DataWorkerContext): void {
   }, DATA_SETTLEMENT_BATCH_IDLE_TIMEOUT_MS);
 
   batchSettlementFlushTimer.unref?.();
+
+  if (batchSettlementFirstBufferedAtMs !== null && !batchSettlementMaxAgeTimer) {
+    const elapsedMs = Date.now() - batchSettlementFirstBufferedAtMs;
+    const remainingMs = Math.max(0, DATA_SETTLEMENT_BATCH_MAX_AGE_MS - elapsedMs);
+
+    batchSettlementMaxAgeTimer = setTimeout(() => {
+      void flushBatchSettlementBuffer(context, "max-age-timeout").catch(error => {
+        console.error("[settlement] Batch max-age flush failed:", error);
+      });
+    }, remainingMs);
+
+    batchSettlementMaxAgeTimer.unref?.();
+  }
 }
 
 async function flushBatchSettlementBuffer(
@@ -168,54 +206,78 @@ async function flushBatchSettlementBuffer(
     }
 
     const items = batchSettlementBuffer;
+    const flushedBatchFirstBufferedAtMs = batchSettlementFirstBufferedAtMs;
     batchSettlementBuffer = [];
+    batchSettlementFirstBufferedAtMs = null;
 
     if (batchSettlementFlushTimer) {
       clearTimeout(batchSettlementFlushTimer);
       batchSettlementFlushTimer = null;
     }
+    if (batchSettlementMaxAgeTimer) {
+      clearTimeout(batchSettlementMaxAgeTimer);
+      batchSettlementMaxAgeTimer = null;
+    }
 
-    const values = items.map(item => [
-      toStrictBytes32(item.inputHash, "inputHash"),
-      toStrictBytes32(item.outputHash, "outputHash"),
-      teeSignatureLeafValue(item.teeSignature),
-    ]);
+    try {
+      const values = items.map(item => [
+        toStrictBytes32(item.inputHash, "inputHash"),
+        toStrictBytes32(item.outputHash, "outputHash"),
+        teeSignatureLeafValue(item.teeSignature),
+      ]);
 
-    const tree = StandardMerkleTree.of(values, ["bytes32", "bytes32", "bytes32"]);
-    const merkleRoot = tree.root;
-    const treeData = JSON.stringify(tree.dump());
-    const blobId = await uploadToWalrus(treeData);
-    const settlementTxHash = await context.submitBatchSettlement(
-      merkleRoot as `0x${string}`,
-      items.length,
-      blobId,
-    );
+      const tree = StandardMerkleTree.of(values, ["bytes32", "bytes32", "bytes32"]);
+      const merkleRoot = tree.root;
+      const treeData = JSON.stringify(tree.dump());
+      const blobId = await uploadToWalrus(treeData);
+      const settlementTxHash = await context.submitBatchSettlement(
+        merkleRoot as `0x${string}`,
+        items.length,
+        blobId,
+      );
 
-    console.log("[settlement] Batch settlement flushed:", {
-      signerAddress: context.signerAddress,
-      chainId: context.chainId,
-      chainName: context.chainName,
-      merkleRoot,
-      walrusBlobId: blobId,
-      itemCount: items.length,
-      reason,
-    });
+      console.log("[settlement] Batch settlement flushed:", {
+        signerAddress: context.signerAddress,
+        chainId: context.chainId,
+        chainName: context.chainName,
+        merkleRoot,
+        walrusBlobId: blobId,
+        itemCount: items.length,
+        reason,
+      });
 
-    console.log("[settlement] Batch settlement transaction submitted:", {
-      settlementContractAddress: context.settlementContractAddress,
-      txHash: settlementTxHash,
-      merkleRoot,
-      batchSize: items.length,
-      walrusBlobId: blobId,
-    });
+      console.log("[settlement] Batch settlement transaction submitted:", {
+        settlementContractAddress: context.settlementContractAddress,
+        txHash: settlementTxHash,
+        merkleRoot,
+        batchSize: items.length,
+        walrusBlobId: blobId,
+      });
 
-    return {
-      merkleRoot,
-      blobId,
-      itemCount: items.length,
-      reason,
-      settlementTxHash,
-    };
+      return {
+        merkleRoot,
+        blobId,
+        itemCount: items.length,
+        reason,
+        settlementTxHash,
+      };
+    } catch (error) {
+      batchSettlementBuffer = [...items, ...batchSettlementBuffer];
+      batchSettlementFirstBufferedAtMs =
+        flushedBatchFirstBufferedAtMs ?? batchSettlementFirstBufferedAtMs ?? Date.now();
+      scheduleBatchFlush(context);
+
+      console.error("[settlement] Batch settlement flush failed; restored items to buffer:", {
+        signerAddress: context.signerAddress,
+        chainId: context.chainId,
+        chainName: context.chainName,
+        restoredItemCount: items.length,
+        bufferedItems: batchSettlementBuffer.length,
+        reason,
+        error,
+      });
+      throw error;
+    }
   })();
 
   try {
@@ -240,7 +302,12 @@ export async function processPrivateSettlement(): Promise<SettlementHandlerResul
 export async function uploadToWalrus(data: string): Promise<string> {
   const publisherUrl = process.env.WALRUS_PUBLISHER_URL || "http://localhost:9002/v1/blobs";
   const url = `${publisherUrl}?epochs=10`;
+  const walrusUploadTimeoutMs = Number(process.env.WALRUS_UPLOAD_TIMEOUT_MS || 30_000);
   console.log(`Uploading individual settlement payload to Walrus: ${publisherUrl}`);
+
+  const abortController = new AbortController();
+  const timeout = setTimeout(() => abortController.abort(), walrusUploadTimeoutMs);
+  timeout.unref?.();
 
   const response = await fetch(url, {
     method: "PUT",
@@ -248,6 +315,9 @@ export async function uploadToWalrus(data: string): Promise<string> {
     headers: {
       "Content-Type": "application/json",
     },
+    signal: abortController.signal,
+  }).finally(() => {
+    clearTimeout(timeout);
   });
 
   if (!response.ok) {
@@ -274,6 +344,9 @@ export async function processBatchSettlement(
   context: DataWorkerContext,
 ): Promise<SettlementHandlerResult> {
   batchSettlementBuffer.push(data);
+  if (batchSettlementFirstBufferedAtMs === null) {
+    batchSettlementFirstBufferedAtMs = Date.now();
+  }
   console.log("[settlement] Batch settlement item buffered:", {
     signerAddress: context.signerAddress,
     chainId: context.chainId,
@@ -303,45 +376,59 @@ export async function processIndividualSettlement(
   data: SettlementIndividualData,
   context: DataWorkerContext,
 ): Promise<SettlementHandlerResult> {
-  const walrusPayload = {
-    input: data.input,
-    output: data.output,
-    teeSignature: data.teeSignature,
-    teeId: data.teeId,
-    timestamp: data.timestamp,
-    ethAddress: data.ethAddress,
-  };
-  const walrusData = JSON.stringify(walrusPayload);
-  const blobId = await uploadToWalrus(walrusData);
-  const txHash = await context.submitIndividualSettlement({
-    teeId: data.teeId,
-    inputHash: toStrictBytes32(data.inputHash, "inputHash"),
-    outputHash: toStrictBytes32(data.outputHash, "outputHash"),
-    timestamp: data.timestamp,
-    ethAddress: data.ethAddress,
-    walrusBlobId: blobId,
-    signature: data.teeSignature,
-  });
+  try {
+    const walrusPayload = {
+      input: data.input,
+      output: data.output,
+      teeSignature: data.teeSignature,
+      teeId: data.teeId,
+      timestamp: data.timestamp,
+      ethAddress: data.ethAddress,
+    };
+    const walrusData = JSON.stringify(walrusPayload);
+    const blobId = await uploadToWalrus(walrusData);
+    const decodedSignatureHex = base64ToBytesCalldata(data.teeSignature);
 
-  console.log("[settlement] Processing individual settlement:", {
-    signerAddress: context.signerAddress,
-    chainId: context.chainId,
-    chainName: context.chainName,
-    walrusBlobId: blobId,
-    txHash,
-    data,
-  });
+    const txHash = await context.submitIndividualSettlement({
+      teeId: data.teeId,
+      inputHash: toStrictBytes32(data.inputHash, "inputHash"),
+      outputHash: toStrictBytes32(data.outputHash, "outputHash"),
+      timestamp: data.timestamp,
+      ethAddress: data.ethAddress,
+      walrusBlobId: blobId,
+      signature: decodedSignatureHex,
+    });
 
-  console.log(
-    `[settlement] Individual settlement uploaded to Walrus with blob id: ${blobId}, txHash: ${txHash}`,
-  );
+    console.log("[settlement] Processing individual settlement:", {
+      signerAddress: context.signerAddress,
+      chainId: context.chainId,
+      chainName: context.chainName,
+      walrusBlobId: blobId,
+      txHash,
+      data,
+    });
 
-  return {
-    acknowledged: true,
-    settlementType: "individual",
-    processedAt: new Date().toISOString(),
-    notes: `Individual settlement processed (walrusBlobId=${blobId}, txHash=${txHash}).`,
-  };
+    console.log(
+      `[settlement] Individual settlement uploaded to Walrus with blob id: ${blobId}, txHash: ${txHash}`,
+    );
+
+    return {
+      acknowledged: true,
+      settlementType: "individual",
+      processedAt: new Date().toISOString(),
+      notes: `Individual settlement processed (walrusBlobId=${blobId}, txHash=${txHash}).`,
+    };
+  } catch (error) {
+    console.error("[settlement] Individual settlement failed:", {
+      signerAddress: context.signerAddress,
+      chainId: context.chainId,
+      chainName: context.chainName,
+      settlementContractAddress: context.settlementContractAddress,
+      data,
+      error,
+    });
+    throw error;
+  }
 }
 
 export async function processDataSettlementJob(
@@ -396,6 +483,14 @@ export function createDataWorkerContext(): DataWorkerContext {
         maxFeePerGas: parseGwei("0.002"),
         maxPriorityFeePerGas: parseGwei("0.001"),
       });
+      const receipt = await withTimeout(
+        ogEvmWalletClient.waitForTransactionReceipt({ hash: txHash }),
+        DATA_WORKER_TX_RECEIPT_TIMEOUT_MS,
+        "Batch settlement receipt wait",
+      );
+      if (receipt.status !== "success") {
+        throw new Error(`Batch settlement transaction reverted: ${txHash}`);
+      }
       return txHash;
     },
     submitIndividualSettlement: async ({
@@ -424,6 +519,14 @@ export function createDataWorkerContext(): DataWorkerContext {
         maxFeePerGas: parseGwei("0.002"),
         maxPriorityFeePerGas: parseGwei("0.001"),
       });
+      const receipt = await withTimeout(
+        ogEvmWalletClient.waitForTransactionReceipt({ hash: txHash }),
+        DATA_WORKER_TX_RECEIPT_TIMEOUT_MS,
+        "Individual settlement receipt wait",
+      );
+      if (receipt.status !== "success") {
+        throw new Error(`Individual settlement transaction reverted: ${txHash}`);
+      }
       return txHash;
     },
   };
