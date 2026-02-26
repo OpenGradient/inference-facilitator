@@ -476,6 +476,25 @@ abstract contract AccessControl is Context, IAccessControl, ERC165 {
     }
 }
 
+interface ISettlementContract {
+    function verifySettlement(
+        bytes32 teeId,
+        bytes32 inputHash,
+        bytes32 outputHash,
+        uint256 timestamp,
+        bytes calldata signature
+    ) external returns (bytes32 settlementHash);
+
+    function verifySignature(
+        bytes32 teeId,
+        bytes32 inputHash,
+        bytes32 outputHash,
+        uint256 timestamp,
+        bytes calldata signature
+    ) external view returns (bool);
+
+}
+
 pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
@@ -483,41 +502,56 @@ import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 contract SettlementRelay is Ownable, AccessControl {
     bytes32 public constant SETTLEMENT_RELAY_ROLE = keccak256("SETTLEMENT_RELAY_ROLE");
 
-    event Settlement(bytes32 indexed inputHash, bytes32 indexed outputHash);
-    
-    event BatchSettlement(bytes32 indexed merkleRoot, uint256 batchSize);
-    
-    event SettlementWithMetadata(
-        bytes32 indexed inputHash, 
-        bytes32 indexed outputHash, 
-        string modelInfo,
-        bytes inputData,
-        bytes outputData
+    ISettlementContract public SETTLEMENT_CONTRACT;
+
+    event BatchSettlement(
+        bytes32 indexed merkleRoot,
+        uint256 batchSize,
+        bytes walrusBlobId
     );
 
-    constructor() Ownable(msg.sender) {
+    event IndividualSettlement(
+        bytes32 indexed teeId,
+        address indexed ethAddress,
+        bytes32 inputHash,
+        bytes32 outputHash,
+        uint256 timestamp,
+        bytes walrusBlobId,
+        bytes signature
+    );
+
+    constructor(address _settlement_contract) Ownable(msg.sender) {
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(SETTLEMENT_RELAY_ROLE, msg.sender);
+
+        SETTLEMENT_CONTRACT = ISettlementContract(_settlement_contract);
     }
 
     // --- WRITE FUNCTIONS (Only Relay) ---
 
-    function settle(bytes32 _inputHash, bytes32 _outputHash) external onlyRole(SETTLEMENT_RELAY_ROLE) {
-        emit Settlement(_inputHash, _outputHash);
+    function batchSettle(bytes32 _merkleRoot, uint256 _batchSize, bytes calldata _walrusBlobId) external{
+        emit BatchSettlement(_merkleRoot, _batchSize, _walrusBlobId);
     }
 
-    function batchSettle(bytes32 _merkleRoot, uint256 _batchSize) external onlyRole(SETTLEMENT_RELAY_ROLE) {
-        emit BatchSettlement(_merkleRoot, _batchSize);
-    }
-
-    function settleWithMetadata(
-        bytes32 _inputHash, 
+    function settleIndividual(
+        bytes32 _teeId,
+        bytes32 _inputHash,
         bytes32 _outputHash,
-        string calldata _modelInfo,
-        bytes calldata _inputData,
-        bytes calldata _outputData
-    ) external onlyRole(SETTLEMENT_RELAY_ROLE) {
-        emit SettlementWithMetadata(_inputHash, _outputHash, _modelInfo, _inputData, _outputData);
+        uint256 _timestamp,
+        address _ethAddress,
+        bytes calldata _walrusBlobId,
+        bytes calldata _signature
+    ) external{
+        require(SETTLEMENT_CONTRACT.verifySignature(_teeId, _inputHash, _outputHash, _timestamp, _signature), "Invalid signature");
+        emit IndividualSettlement(
+            _teeId,
+            _ethAddress,
+            _inputHash,
+            _outputHash,
+            _timestamp,
+            _walrusBlobId,
+            _signature
+        );
     }
 
     // --- READ / VERIFY FUNCTIONS (Public) ---

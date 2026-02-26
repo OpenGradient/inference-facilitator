@@ -1,200 +1,203 @@
-/* eslint-env node */
-import { config } from "dotenv";
-import express, { Request, Response } from "express";
-import { verify, settle, startWorker, settlePayload } from "x402/facilitator";
+// /* eslint-env node */
+// import { config } from "dotenv";
+// import express, { Request, Response } from "express";
+// import { verify, settle, startWorker, settlePayload } from "x402/facilitator";
 
-import {
-  PaymentRequirementsSchema,
-  type PaymentRequirements,
-  type PaymentPayload,
-  PaymentPayloadSchema,
-  createConnectedClient,
-  createSigner,
-  SupportedEVMNetworks,
-  SupportedSVMNetworks,
-  Signer,
-  ConnectedClient,
-  SupportedPaymentKind,
-  isSvmSignerWallet,
-  type X402Config,
-} from "x402/types";
+// import {
+//   PaymentRequirementsSchema,
+//   type PaymentRequirements,
+//   type PaymentPayload,
+//   PaymentPayloadSchema,
+//   createConnectedClient,
+//   createSigner,
+//   SupportedEVMNetworks,
+//   SupportedSVMNetworks,
+//   Signer,
+//   ConnectedClient,
+//   SupportedPaymentKind,
+//   isSvmSignerWallet,
+//   type X402Config,
+// } from "x402/types";
 
-config();
+// config();
 
-const EVM_PRIVATE_KEY = process.env.EVM_PRIVATE_KEY || "";
-const SVM_PRIVATE_KEY = process.env.SVM_PRIVATE_KEY || "";
-const SVM_RPC_URL = process.env.SVM_RPC_URL || "";
+// const EVM_PRIVATE_KEY = process.env.EVM_PRIVATE_KEY || "";
+// const SVM_PRIVATE_KEY = process.env.SVM_PRIVATE_KEY || "";
+// const SVM_RPC_URL = process.env.SVM_RPC_URL || "";
 
-if (!EVM_PRIVATE_KEY && !SVM_PRIVATE_KEY) {
-  console.error("Missing required environment variables");
-  process.exit(1);
-}
+// if (!EVM_PRIVATE_KEY && !SVM_PRIVATE_KEY) {
+//   console.error("Missing required environment variables");
+//   process.exit(1);
+// }
 
-// Create X402 config
-const x402Config: X402Config = {
-  svmConfig: SVM_RPC_URL ? { rpcUrl: SVM_RPC_URL } : undefined,
-  redis: process.env.REDIS_HOST
-    ? {
-      host: process.env.REDIS_HOST,
-      port: process.env.REDIS_PORT ? parseInt(process.env.REDIS_PORT, 10) : 6379,
-    }
-    : undefined,
-};
+// // Create X402 config
+// const x402Config: X402Config = {
+//   svmConfig: SVM_RPC_URL ? { rpcUrl: SVM_RPC_URL } : undefined,
+//   redis: process.env.REDIS_HOST
+//     ? {
+//       host: process.env.REDIS_HOST,
+//       port: process.env.REDIS_PORT ? parseInt(process.env.REDIS_PORT, 10) : 6379,
+//     }
+//     : undefined,
+// };
 
-const app = express();
+// const app = express();
 
-// Configure express to parse JSON bodies
-app.use(express.json());
+// // Configure express to parse JSON bodies
+// app.use(express.json());
 
-type VerifyRequest = {
-  paymentPayload: PaymentPayload;
-  paymentRequirements: PaymentRequirements;
-};
+// type VerifyRequest = {
+//   paymentPayload: PaymentPayload;
+//   paymentRequirements: PaymentRequirements;
+// };
 
-type SettleRequest = {
-  paymentPayload: PaymentPayload;
-  paymentRequirements: PaymentRequirements;
-};
-
-
-app.get("/verify", (req: Request, res: Response) => {
-  res.json({
-    endpoint: "/verify",
-    description: "POST to verify x402 payments",
-    body: {
-      paymentPayload: "PaymentPayload",
-      paymentRequirements: "PaymentRequirements",
-    },
-  });
-});
-
-app.post("/verify", async (req: Request, res: Response) => {
-  try {
-    const body: VerifyRequest = req.body;
-    const paymentRequirements = PaymentRequirementsSchema.parse(body.paymentRequirements);
-    const paymentPayload = PaymentPayloadSchema.parse(body.paymentPayload);
-
-    // use the correct client/signer based on the requested network
-    // svm verify requires a Signer because it signs & simulates the txn
-    let client: Signer | ConnectedClient;
-    if (SupportedEVMNetworks.includes(paymentRequirements.network)) {
-      client = createConnectedClient(paymentRequirements.network);
-    } else if (SupportedSVMNetworks.includes(paymentRequirements.network)) {
-      client = await createSigner(paymentRequirements.network, SVM_PRIVATE_KEY);
-    } else {
-      throw new Error("Invalid network");
-    }
-
-    // verify
-    const valid = await verify(client, paymentPayload, paymentRequirements, x402Config);
-    res.json(valid);
-  } catch (error) {
-    console.error("error", error);
-    res.status(400).json({ error: "Invalid request" });
-  }
-});
-
-app.get("/settle", (req: Request, res: Response) => {
-  res.json({
-    endpoint: "/settle",
-    description: "POST to settle x402 payments",
-    body: {
-      paymentPayload: "PaymentPayload",
-      paymentRequirements: "PaymentRequirements",
-    },
-  });
-});
-
-app.get("/supported", async (req: Request, res: Response) => {
-  let kinds: SupportedPaymentKind[] = [];
-
-  // evm
-  if (EVM_PRIVATE_KEY) {
-    kinds.push({
-      x402Version: 1,
-      scheme: "exact",
-      network: "og-devnet",
-    });
-  }
-
-  // svm
-  if (SVM_PRIVATE_KEY) {
-    const signer = await createSigner("solana-devnet", SVM_PRIVATE_KEY);
-    const feePayer = isSvmSignerWallet(signer) ? signer.address : undefined;
-
-    kinds.push({
-      x402Version: 1,
-      scheme: "exact",
-      network: "solana-devnet",
-      extra: {
-        feePayer,
-      },
-    });
-  }
-  res.json({
-    kinds,
-  });
-});
-
-app.post("/settle", async (req: Request, res: Response) => {
-  try {
-    const body: SettleRequest = req.body;
-
-    // get headers from req
-    const headers = req.headers;
-    const inputHash = headers["x-input-hash"] as string;
-    const outputHash = headers["x-output-hash"] as string;
-    const settlementType = headers["x-settlement-type"] as string;
-
-    const paymentRequirements = PaymentRequirementsSchema.parse(body.paymentRequirements);
-    const paymentPayload = PaymentPayloadSchema.parse(body.paymentPayload);
-
-    // use the correct private key based on the requested network
-    let signer: Signer;
-    if (SupportedEVMNetworks.includes(paymentRequirements.network)) {
-      signer = await createSigner(paymentRequirements.network, EVM_PRIVATE_KEY);
-    } else if (SupportedSVMNetworks.includes(paymentRequirements.network)) {
-      signer = await createSigner(paymentRequirements.network, SVM_PRIVATE_KEY);
-    } else {
-      throw new Error("Invalid network");
-    }
-
-    // settle payment
-    const response = await settle(signer, paymentPayload, paymentRequirements, x402Config);
-    // settle input and output
-    const settlement_data = {
-      network: paymentRequirements.network,
-      inputHash,
-      outputHash,
-      msg: "",
-      settlement_type: settlementType,
-    }
-    const payload_resp = await settlePayload(signer, settlement_data, x402Config);
-
-    res.json(response);
-  } catch (error) {
-    console.error("error", error);
-    res.status(400).json({ error: `Invalid request: ${error}` });
-  }
-});
+// type SettleRequest = {
+//   paymentPayload: PaymentPayload;
+//   paymentRequirements: PaymentRequirements;
+// };
 
 
-app.listen(process.env.PORT || 3000, () => {
-  console.log(`Server listening at http://localhost:${process.env.PORT || 3000}`);
+// app.get("/verify", (req: Request, res: Response) => {
+//   res.json({
+//     endpoint: "/verify",
+//     description: "POST to verify x402 payments",
+//     body: {
+//       paymentPayload: "PaymentPayload",
+//       paymentRequirements: "PaymentRequirements",
+//     },
+//   });
+// });
 
-  if (x402Config.redis) {
-    startWorker(async (network: string) => {
-      const netAny = network as any;
-      console.log(`Worker processing network: ${netAny}`);
+// app.post("/verify", async (req: Request, res: Response) => {
+//   try {
+//     const body: VerifyRequest = req.body;
+//     console.log("body", body);
+//     const paymentRequirements = PaymentRequirementsSchema.parse(body.paymentRequirements);
+//     const paymentPayload = PaymentPayloadSchema.parse(body.paymentPayload);
 
-      if (SupportedEVMNetworks.includes(netAny)) {
-        return createSigner(netAny, EVM_PRIVATE_KEY);
-      } else if (SupportedSVMNetworks.includes(netAny)) {
-        return createSigner(netAny, SVM_PRIVATE_KEY);
-      }
-      throw new Error(`Unsupported network: ${network}`);
-    }, x402Config).catch((err: any) => {
-      console.error("Worker process failed:", err);
-    });
-  }
-});
+//     // use the correct client/signer based on the requested network
+//     // svm verify requires a Signer because it signs & simulates the txn
+//     let client: Signer | ConnectedClient;
+//     if (SupportedEVMNetworks.includes(paymentRequirements.network)) {
+//       client = createConnectedClient(paymentRequirements.network);
+//     } else if (SupportedSVMNetworks.includes(paymentRequirements.network)) {
+//       client = await createSigner(paymentRequirements.network, SVM_PRIVATE_KEY);
+//     } else {
+//       throw new Error("Invalid network");
+//     }
+
+//     // verify
+//     const valid = await verify(client, paymentPayload, paymentRequirements, x402Config);
+//     res.json(valid);
+//   } catch (error) {
+//     console.error("error", error);
+//     res.status(400).json({ error: "Invalid request" });
+//   }
+// });
+
+// app.get("/settle", (req: Request, res: Response) => {
+//   res.json({
+//     endpoint: "/settle",
+//     description: "POST to settle x402 payments",
+//     body: {
+//       paymentPayload: "PaymentPayload",
+//       paymentRequirements: "PaymentRequirements",
+//     },
+//   });
+// });
+
+// app.get("/supported", async (req: Request, res: Response) => {
+//   let kinds: SupportedPaymentKind[] = [];
+
+//   // evm
+//   if (EVM_PRIVATE_KEY) {
+//     kinds.push({
+//       x402Version: 1,
+//       scheme: "exact",
+//       network: "og-evm",
+//     });
+//   }
+
+//   // svm
+//   if (SVM_PRIVATE_KEY) {
+//     const signer = await createSigner("solana-devnet", SVM_PRIVATE_KEY);
+//     const feePayer = isSvmSignerWallet(signer) ? signer.address : undefined;
+
+//     kinds.push({
+//       x402Version: 1,
+//       scheme: "exact",
+//       network: "solana-devnet",
+//       extra: {
+//         feePayer,
+//       },
+//     });
+//   }
+//   res.json({
+//     kinds,
+//   });
+// });
+
+// app.post("/settle", async (req: Request, res: Response) => {
+//   try {
+//     const body: SettleRequest = req.body;
+
+//     // get headers from req
+//     const headers = req.headers;
+//     const inputHash = headers["x-input-hash"] as string;
+//     const outputHash = headers["x-output-hash"] as string;
+//     const settlementType = headers["x-settlement-type"] as string;
+//     const modelType = headers["x-model-type"] as string;
+
+//     const paymentRequirements = PaymentRequirementsSchema.parse(body.paymentRequirements);
+//     const paymentPayload = PaymentPayloadSchema.parse(body.paymentPayload);
+
+//     // use the correct private key based on the requested network
+//     let signer: Signer;
+//     if (SupportedEVMNetworks.includes(paymentRequirements.network)) {
+//       signer = await createSigner(paymentRequirements.network, EVM_PRIVATE_KEY);
+//     } else if (SupportedSVMNetworks.includes(paymentRequirements.network)) {
+//       signer = await createSigner(paymentRequirements.network, SVM_PRIVATE_KEY);
+//     } else {
+//       throw new Error("Invalid network");
+//     }
+
+//     // settle payment
+//     const response = await settle(signer, paymentPayload, paymentRequirements, x402Config);
+//     // settle input and output
+//     const settlement_data = { 
+//       network: paymentRequirements.network,
+//       inputHash,
+//       outputHash,
+//       msg: "",
+//       settlement_type: settlementType,
+//       model_type: modelType,
+//     }
+//     const payload_resp = await settlePayload(signer, settlement_data, x402Config);
+
+//     res.json(response);
+//   } catch (error) {
+//     console.error("error", error);
+//     res.status(400).json({ error: `Invalid request: ${error}` });
+//   }
+// });
+
+
+// app.listen(process.env.PORT || 3000, () => {
+//   console.log(`Server listening at http://localhost:${process.env.PORT || 3000}`);
+
+//   if (x402Config.redis) {
+//     startWorker(async (network: string) => {
+//       const netAny = network as any;
+//       console.log(`Worker processing network: ${netAny}`);
+
+//       if (SupportedEVMNetworks.includes(netAny)) {
+//         return createSigner(netAny, EVM_PRIVATE_KEY);
+//       } else if (SupportedSVMNetworks.includes(netAny)) {
+//         return createSigner(netAny, SVM_PRIVATE_KEY);
+//       }
+//       throw new Error(`Unsupported network: ${network}`);
+//     }, x402Config).catch((err: any) => {
+//       console.error("Worker process failed:", err);
+//     });
+//   }
+// });
