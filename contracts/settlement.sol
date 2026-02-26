@@ -476,12 +476,33 @@ abstract contract AccessControl is Context, IAccessControl, ERC165 {
     }
 }
 
+interface ISettlementContract {
+    function verifySettlement(
+        bytes32 teeId,
+        bytes32 inputHash,
+        bytes32 outputHash,
+        uint256 timestamp,
+        bytes calldata signature
+    ) external returns (bytes32 settlementHash);
+
+    function verifySignature(
+        bytes32 teeId,
+        bytes32 inputHash,
+        bytes32 outputHash,
+        uint256 timestamp,
+        bytes calldata signature
+    ) external view returns (bool);
+
+}
+
 pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 
 contract SettlementRelay is Ownable, AccessControl {
     bytes32 public constant SETTLEMENT_RELAY_ROLE = keccak256("SETTLEMENT_RELAY_ROLE");
+
+    ISettlementContract public SETTLEMENT_CONTRACT;
 
     event BatchSettlement(
         bytes32 indexed merkleRoot,
@@ -499,14 +520,16 @@ contract SettlementRelay is Ownable, AccessControl {
         bytes signature
     );
 
-    constructor() Ownable(msg.sender) {
+    constructor(address _settlement_contract) Ownable(msg.sender) {
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(SETTLEMENT_RELAY_ROLE, msg.sender);
+
+        SETTLEMENT_CONTRACT = ISettlementContract(_settlement_contract);
     }
 
     // --- WRITE FUNCTIONS (Only Relay) ---
 
-    function batchSettle(bytes32 _merkleRoot, uint256 _batchSize, bytes calldata _walrusBlobId) external onlyRole(SETTLEMENT_RELAY_ROLE) {
+    function batchSettle(bytes32 _merkleRoot, uint256 _batchSize, bytes calldata _walrusBlobId) external{
         emit BatchSettlement(_merkleRoot, _batchSize, _walrusBlobId);
     }
 
@@ -518,7 +541,8 @@ contract SettlementRelay is Ownable, AccessControl {
         address _ethAddress,
         bytes calldata _walrusBlobId,
         bytes calldata _signature
-    ) external onlyRole(SETTLEMENT_RELAY_ROLE) {
+    ) external{
+        require(SETTLEMENT_CONTRACT.verifySignature(_teeId, _inputHash, _outputHash, _timestamp, _signature), "Invalid signature");
         emit IndividualSettlement(
             _teeId,
             _ethAddress,
