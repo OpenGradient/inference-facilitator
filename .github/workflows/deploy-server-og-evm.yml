@@ -1,4 +1,4 @@
-name: Deploy to AWS
+name: Deploy to AWS - OG EVM
 
 on:
   workflow_dispatch:
