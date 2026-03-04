@@ -1,4 +1,4 @@
-# OpenGradient Inference Facilitator
+# OpenGradient x402 Inference Facilitator
 
 A fork of the x402 facilitator service customized for the OpenGradient network, with added support for LLM TEE (Trusted Execution Environment) inference settlement. This service handles payment verification and settlement for x402 payments, plus on-chain settlement of LLM inference input/output hashes for verifiable AI.
 
