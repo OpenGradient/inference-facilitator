@@ -216,7 +216,12 @@ function parseIndividualSettlementData(decoded: unknown): SettlementIndividualDa
     getRequiredStringField(decoded, ["teeId", "tee_id", "tee id", "tee-id"]),
     "teeId",
   );
-  const timestamp = parseUint256Field(decoded, ["timestamp", "timeStamp", "time_stamp"]);
+  const timestamp = parseUint256Field(decoded, [
+    "timestamp",
+    "timeStamp",
+    "time_stamp",
+    "tee_timestamp",
+  ]);
   const ethAddress = parseEvmAddressField(decoded, [
     "ethAddress",
     "eth_address",
