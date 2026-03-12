@@ -71,7 +71,7 @@ The server will start on http://localhost:3000
 
 ### GET /supported
 
-Returns information the payment kinds that the facilitator supports.
+Returns information about the payment kinds that the facilitator supports.
 
 Sample Response
 
