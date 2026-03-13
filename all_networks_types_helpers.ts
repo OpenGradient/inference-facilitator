@@ -36,6 +36,8 @@ export const DATA_SETTLEMENT_QUEUE_NAME = resolveQueueName(
 export const SHUTDOWN_TIMEOUT_MS = Number(process.env.SHUTDOWN_TIMEOUT_MS || 10_000);
 export const DATA_WORKER_EVM_PRIVATE_KEY_ENV = "DATA_WORKER_EVM_PRIVATE_KEY";
 export const DATA_WORKER_SETTLEMENT_CONTRACT_ENV = "DATA_WORKER_SETTLEMENT_CONTRACT";
+export const HEARTBEAT_RELAY_EVM_PRIVATE_KEY_ENV = "HEARTBEAT_RELAY_EVM_PRIVATE_KEY";
+export const HEARTBEAT_RELAY_REGISTRY_CONTRACT_ENV = "HEARTBEAT_RELAY_REGISTRY_CONTRACT";
 export const DATA_SETTLEMENT_BATCH_BUFFER_SIZE = Number(
   process.env.DATA_SETTLEMENT_BATCH_BUFFER_SIZE || 20,
 );
@@ -104,6 +106,25 @@ export type DataWorkerContext = {
     ethAddress: `0x${string}`;
     walrusBlobId: string;
     signature: string;
+  }) => Promise<`0x${string}`>;
+};
+
+export type HeartbeatRelayRequest = {
+  teeId: `0x${string}`;
+  timestamp: string;
+  signature: string;
+  contractAddress?: `0x${string}`;
+};
+
+export type HeartbeatRelayContext = {
+  signerAddress: `0x${string}`;
+  chainId: number;
+  chainName: string;
+  registryContractAddress: `0x${string}`;
+  submitHeartbeat: (args: {
+    teeId: `0x${string}`;
+    timestamp: string;
+    signature: `0x${string}`;
   }) => Promise<`0x${string}`>;
 };
 
