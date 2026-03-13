@@ -92,7 +92,7 @@ export const eip3009ABI = [
  */
 
 // TODO: revert after precompile upgrade
-export const PERMIT2_ADDRESS = "0x000000000022D473030F116dDEE9F6B43aC78BA3" as const;
+export const PERMIT2_ADDRESS = "0xA2820a4d4F3A8c5Fa4eaEBF45B093173105a8f8F" as const;
 
 /**
  * x402ExactPermit2Proxy contract address.
@@ -102,7 +102,7 @@ export const PERMIT2_ADDRESS = "0x000000000022D473030F116dDEE9F6B43aC78BA3" as c
  * - Vanity-mined salt for prefix 0x4020 and suffix 0001
  * - Contract bytecode + constructor args (PERMIT2_ADDRESS)
  */
-export const x402ExactPermit2ProxyAddress = "0x5b0c02d331ad156Ad9CEc247ABee72fBd125d139" as const;
+export const x402ExactPermit2ProxyAddress = "0xdB9F7863C9E06Daf21aD43663a06a2f43d303Fa7" as const;
 
 /**
  * x402UptoPermit2Proxy contract address.
@@ -112,7 +112,7 @@ export const x402ExactPermit2ProxyAddress = "0x5b0c02d331ad156Ad9CEc247ABee72fBd
  * - Vanity-mined salt for prefix 0x4020 and suffix 0002
  * - Contract bytecode + constructor args (PERMIT2_ADDRESS)
  */
-export const x402UptoPermit2ProxyAddress = "0x5b0c02d331ad156Ad9CEc247ABee72fBd125d139" as const;
+export const x402UptoPermit2ProxyAddress = "0xdB9F7863C9E06Daf21aD43663a06a2f43d303Fa7" as const;
 
 /**
  * x402UptoPermit2Proxy ABI - settle function for upto payment scheme (variable amounts).
