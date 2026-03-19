@@ -2,23 +2,30 @@ import { Queue, type Job } from "bullmq";
 import express from "express";
 import { randomUUID } from "node:crypto";
 import { type Server } from "node:http";
+import { getAddress, isAddress } from "viem";
 import { incrementMetric } from "./metrics.js";
 import {
   createBullMqConnection,
   createFacilitator,
+  createHeartbeatRelayContext,
   processPrivateSettlement,
 } from "./all_networks_shared.js";
 import {
+  base64ToBytesCalldata,
   DATA_SETTLEMENT_QUEUE_NAME,
+  getRequiredStringField,
   isSettlementError,
+  parseUint256Field,
   normalizeHeaderValue,
   PAYMENT_QUEUE_NAME,
   parseSettlementJobDataFromHeaders,
   PORT,
   settlementStatusFromBullState,
   SHUTDOWN_TIMEOUT_MS,
+  toStrictBytes32,
   toSerializableResult,
   type DataSettlementJobData,
+  type HeartbeatRelayRequest,
   type PaymentSettlementJobData,
   type SettlementApiJobResponse,
 } from "./all_networks_types_helpers.js";
@@ -29,6 +36,21 @@ app.use(express.json());
 
 const facilitator = await createFacilitator();
 const connection = createBullMqConnection();
+
+const heartbeatRelayContext = (() => {
+  try {
+    const context = createHeartbeatRelayContext();
+    console.info(
+      `[heartbeat-relay] enabled for contract ${context.registryContractAddress} with signer ${context.signerAddress} on ${context.chainName} (${context.chainId})`,
+    );
+    return context;
+  } catch (error) {
+    console.warn(
+      `[heartbeat-relay] disabled: ${error instanceof Error ? error.message : "Unknown error"}`,
+    );
+    return null;
+  }
+})();
 
 
 const paymentQueue = new Queue<PaymentSettlementJobData>(PAYMENT_QUEUE_NAME, {
@@ -46,6 +68,39 @@ const dataSettlementQueue = new Queue<DataSettlementJobData>(DATA_SETTLEMENT_QUE
     removeOnFail: false,
   },
 });
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function parseHeartbeatRequestBody(value: unknown): HeartbeatRelayRequest {
+  if (!isRecord(value)) {
+    throw new Error("Heartbeat body must be a JSON object");
+  }
+
+  const teeId = toStrictBytes32(
+    getRequiredStringField(value, ["teeId", "tee_id", "tee id", "tee-id"]),
+    "teeId",
+  );
+  const timestamp = parseUint256Field(value, ["timestamp", "timeStamp", "time_stamp"]);
+  const signature = getRequiredStringField(value, ["signature", "teeSignature", "tee_signature"]);
+
+  let contractAddress: `0x${string}` | undefined;
+  const rawContractAddress = value.contractAddress ?? value.registry ?? value.contract_address;
+  if (typeof rawContractAddress === "string" && rawContractAddress.trim().length > 0) {
+    if (!isAddress(rawContractAddress)) {
+      throw new Error("Invalid contractAddress: expected EVM address");
+    }
+    contractAddress = getAddress(rawContractAddress);
+  }
+
+  return {
+    teeId,
+    timestamp,
+    signature,
+    contractAddress,
+  };
+}
 
 function queueNameFromJobId(jobId: string): "payment" | "settlement" | null {
   if (jobId.startsWith("payment-") || jobId.startsWith("payment:")) {
@@ -225,6 +280,68 @@ app.post("/settle_data", async (req, res) => {
     return res.status(500).json({
       error: error instanceof Error ? error.message : "Unknown error",
     });
+  }
+});
+
+app.post("/heartbeat", async (req, res) => {
+  incrementMetric("api.request.count", ["route:/heartbeat", "method:POST"]);
+  let heartbeatRequest: HeartbeatRelayRequest | null = null;
+  try {
+    if (!heartbeatRelayContext) {
+      return res.status(503).json({
+        error: "Heartbeat relay is not configured on this facilitator",
+      });
+    }
+
+    heartbeatRequest = parseHeartbeatRequestBody(req.body);
+    if (
+      heartbeatRequest.contractAddress &&
+      heartbeatRequest.contractAddress.toLowerCase() !==
+        heartbeatRelayContext.registryContractAddress.toLowerCase()
+    ) {
+      return res.status(400).json({
+        error: "contractAddress does not match facilitator heartbeat relay contract",
+      });
+    }
+
+    const txHash = await heartbeatRelayContext.submitHeartbeat({
+      teeId: heartbeatRequest.teeId,
+      timestamp: heartbeatRequest.timestamp,
+      signature: base64ToBytesCalldata(heartbeatRequest.signature),
+    });
+    incrementMetric("heartbeat.relay.success.count", ["route:/heartbeat"]);
+
+    return res.json({
+      success: true,
+      txHash,
+      teeId: heartbeatRequest.teeId,
+      timestamp: heartbeatRequest.timestamp,
+      relayer: heartbeatRelayContext.signerAddress,
+      contract: heartbeatRelayContext.registryContractAddress,
+    });
+  } catch (error) {
+    incrementMetric("heartbeat.relay.failure.count", ["route:/heartbeat"]);
+    const message = error instanceof Error ? error.message : "Unknown error";
+    console.error("[heartbeat-relay] Request failed:", {
+      teeId: heartbeatRequest?.teeId,
+      timestamp: heartbeatRequest?.timestamp,
+      requestedContractAddress: heartbeatRequest?.contractAddress,
+      relayContractAddress: heartbeatRelayContext?.registryContractAddress,
+      relayer: heartbeatRelayContext?.signerAddress,
+      error,
+    });
+
+    const lower = message.toLowerCase();
+    if (
+      lower.includes("invalid") ||
+      lower.includes("missing") ||
+      lower.includes("heartbeat body") ||
+      lower.includes("expected")
+    ) {
+      return res.status(400).json({ error: message });
+    }
+
+    return res.status(500).json({ error: message });
   }
 });
 

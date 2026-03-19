@@ -19,12 +19,15 @@ import {
   DATA_SETTLEMENT_BATCH_MAX_AGE_MS,
   DATA_WORKER_EVM_PRIVATE_KEY_ENV,
   DATA_WORKER_SETTLEMENT_CONTRACT_ENV,
+  HEARTBEAT_RELAY_EVM_PRIVATE_KEY_ENV,
+  HEARTBEAT_RELAY_REGISTRY_CONTRACT_ENV,
   REDIS_URL,
   teeSignatureLeafValue,
   toBytesCalldata,
   toStrictBytes32,
   type DataSettlementJobData,
   type DataWorkerContext,
+  type HeartbeatRelayContext,
   type SettlementBatchData,
   type SettlementHandlerResult,
   type SettlementIndividualData,
@@ -60,6 +63,10 @@ const DATA_WORKER_SETTLEMENT_GAS_LIMIT = BigInt(
 );
 const DATA_WORKER_TX_RECEIPT_TIMEOUT_MS = Number(
   process.env.DATA_WORKER_TX_RECEIPT_TIMEOUT_MS || 120_000,
+);
+const HEARTBEAT_RELAY_GAS_LIMIT = BigInt(process.env.HEARTBEAT_RELAY_GAS_LIMIT || "500000");
+const HEARTBEAT_RELAY_TX_RECEIPT_TIMEOUT_MS = Number(
+  process.env.HEARTBEAT_RELAY_TX_RECEIPT_TIMEOUT_MS || 120_000,
 );
 
 type BatchFlushReason = "buffer-full" | "idle-timeout" | "max-age-timeout";
@@ -167,6 +174,29 @@ const settlementContractAbi = [
       },
       {
         name: "_signature",
+        type: "bytes",
+      },
+    ],
+    outputs: [],
+  },
+] as const;
+
+const teeRegistryHeartbeatAbi = [
+  {
+    type: "function",
+    name: "heartbeat",
+    stateMutability: "nonpayable",
+    inputs: [
+      {
+        name: "teeId",
+        type: "bytes32",
+      },
+      {
+        name: "timestamp",
+        type: "uint256",
+      },
+      {
+        name: "signature",
         type: "bytes",
       },
     ],
@@ -590,6 +620,84 @@ export function createDataWorkerContext(): DataWorkerContext {
           "tx_type:individual",
           `stage:${stage}`,
         ]);
+        throw error;
+      }
+    },
+  };
+}
+
+export function createHeartbeatRelayContext(): HeartbeatRelayContext {
+  const privateKey = (process.env[HEARTBEAT_RELAY_EVM_PRIVATE_KEY_ENV] ||
+    process.env[DATA_WORKER_EVM_PRIVATE_KEY_ENV] ||
+    process.env.EVM_PRIVATE_KEY) as `0x${string}` | undefined;
+  if (!privateKey) {
+    throw new Error(
+      `${HEARTBEAT_RELAY_EVM_PRIVATE_KEY_ENV} (or ${DATA_WORKER_EVM_PRIVATE_KEY_ENV}/EVM_PRIVATE_KEY) is required for heartbeat relay`,
+    );
+  }
+
+  const registryContractAddress = (process.env[HEARTBEAT_RELAY_REGISTRY_CONTRACT_ENV] ||
+    process.env.HEARTBEAT_CONTRACT_ADDRESS) as `0x${string}` | undefined;
+  if (!registryContractAddress) {
+    throw new Error(
+      `${HEARTBEAT_RELAY_REGISTRY_CONTRACT_ENV} (or HEARTBEAT_CONTRACT_ADDRESS) is required for heartbeat relay`,
+    );
+  }
+
+  const account = privateKeyToAccount(privateKey);
+  const ogEvmWalletClient = createWalletClient({
+    account,
+    chain: ogEvm,
+    transport: http(),
+  }).extend(publicActions);
+
+  return {
+    signerAddress: account.address,
+    chainId: ogEvm.id,
+    chainName: ogEvm.name,
+    registryContractAddress,
+    submitHeartbeat: async ({
+      teeId,
+      timestamp,
+      signature,
+    }): Promise<`0x${string}`> => {
+      let stage: "broadcast" | "receipt" = "broadcast";
+      let txHash: `0x${string}` | undefined;
+      try {
+        txHash = await ogEvmWalletClient.writeContract({
+          address: registryContractAddress,
+          abi: teeRegistryHeartbeatAbi,
+          functionName: "heartbeat",
+          args: [teeId, BigInt(timestamp), signature],
+          gas: HEARTBEAT_RELAY_GAS_LIMIT,
+          maxFeePerGas: parseGwei("0.002"),
+          maxPriorityFeePerGas: parseGwei("0.001"),
+        });
+
+        stage = "receipt";
+        const receipt = await withTimeout(
+          ogEvmWalletClient.waitForTransactionReceipt({ hash: txHash }),
+          HEARTBEAT_RELAY_TX_RECEIPT_TIMEOUT_MS,
+          "Heartbeat relay receipt wait",
+        );
+        if (receipt.status !== "success") {
+          throw new Error(`Heartbeat relay transaction reverted: ${txHash}`);
+        }
+
+        return txHash;
+      } catch (error) {
+        incrementMetric("heartbeat.tx.failure.count", [`stage:${stage}`]);
+        console.error("[heartbeat-relay] Heartbeat transaction failed:", {
+          signerAddress: account.address,
+          chainId: ogEvm.id,
+          chainName: ogEvm.name,
+          registryContractAddress,
+          teeId,
+          timestamp,
+          stage,
+          txHash,
+          error,
+        });
         throw error;
       }
     },
