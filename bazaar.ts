@@ -23,12 +23,13 @@ import dotenv from "dotenv";
 import express from "express";
 import { createWalletClient, http, publicActions } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { baseSepolia } from "viem/chains";
+import { base } from "viem/chains";
 
 dotenv.config();
 
 // Configuration
 const PORT = process.env.PORT || "4022";
+const BASE_RPC_URL = process.env.BASE_RPC_URL || "https://mainnet.base.org";
 
 // Configuration - optional per network
 const evmPrivateKey = process.env.EVM_PRIVATE_KEY as `0x${string}` | undefined;
@@ -43,7 +44,7 @@ if (!evmPrivateKey && !svmPrivateKey) {
 }
 
 // Network configuration
-const EVM_NETWORK = "eip155:84532"; // Base Sepolia
+const EVM_NETWORK = "eip155:8453"; // Base Mainnet
 const SVM_NETWORK = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"; // Solana Devnet
 
 // DiscoveredResource represents a discovered x402 resource for the bazaar catalog
@@ -133,8 +134,8 @@ if (evmPrivateKey) {
   // Create a Viem client with both wallet and public capabilities
   const viemClient = createWalletClient({
     account: evmAccount,
-    chain: baseSepolia,
-    transport: http(),
+    chain: base,
+    transport: http(BASE_RPC_URL),
   }).extend(publicActions);
 
   const evmSigner = toFacilitatorEvmSigner({

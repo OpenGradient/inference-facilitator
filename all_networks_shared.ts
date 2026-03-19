@@ -10,7 +10,7 @@ import { StandardMerkleTree } from "@openzeppelin/merkle-tree";
 import type { RedisOptions } from "ioredis";
 import { createWalletClient, defineChain, http, parseGwei, publicActions, toHex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { baseSepolia } from "viem/chains";
+import { base } from "viem/chains";
 import { gaugeMetric, histogramMetric, incrementMetric } from "./metrics.js";
 import {
   base64ToBytesCalldata,
@@ -61,6 +61,7 @@ const ogEvm = defineChain({
 const DATA_WORKER_SETTLEMENT_GAS_LIMIT = BigInt(
   process.env.DATA_WORKER_SETTLEMENT_GAS_LIMIT || "9000000",
 );
+const BASE_RPC_URL = process.env.BASE_RPC_URL || "https://mainnet.base.org";
 const DATA_WORKER_TX_RECEIPT_TIMEOUT_MS = Number(
   process.env.DATA_WORKER_TX_RECEIPT_TIMEOUT_MS || 120_000,
 );
@@ -758,7 +759,7 @@ export async function createFacilitator(): Promise<x402Facilitator> {
     });
 
   const EVM_NETWORK = "eip155:10740";
-  const BASE_TESTNET_NETWORK = "eip155:84532";
+  const BASE_NETWORK = "eip155:8453";
   const SVM_NETWORK = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
 
   if (evmPrivateKey) {
@@ -773,8 +774,8 @@ export async function createFacilitator(): Promise<x402Facilitator> {
 
     const baseViemClient = createWalletClient({
       account: evmAccount,
-      chain: baseSepolia,
-      transport: http(),
+      chain: base,
+      transport: http(BASE_RPC_URL),
     }).extend(publicActions);
 
     const evmSigner = toFacilitatorEvmSigner({
@@ -873,11 +874,11 @@ export async function createFacilitator(): Promise<x402Facilitator> {
     );
 
     facilitator.register(
-      BASE_TESTNET_NETWORK,
+      BASE_NETWORK,
       new ExactEvmScheme(baseEvmSigner, { deployERC4337WithEIP6492: true }),
     );
     facilitator.register(
-      BASE_TESTNET_NETWORK,
+      BASE_NETWORK,
       new UptoEvmScheme(baseEvmSigner, { deployERC4337WithEIP6492: true }),
     );
   }

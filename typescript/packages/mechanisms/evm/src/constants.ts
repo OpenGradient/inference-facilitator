@@ -91,9 +91,9 @@ export const eip3009ABI = [
  * @see https://github.com/Uniswap/permit2
  */
 
-// TODO: revert after precompile upgrade
 export const PERMIT2_ADDRESS = "0x000000000022D473030F116dDEE9F6B43aC78BA3" as const;
 
+// TODO: swap address
 /**
  * x402ExactPermit2Proxy contract address.
  * Vanity address: 0x4020...0001 for easy recognition.
@@ -102,7 +102,7 @@ export const PERMIT2_ADDRESS = "0x000000000022D473030F116dDEE9F6B43aC78BA3" as c
  * - Vanity-mined salt for prefix 0x4020 and suffix 0001
  * - Contract bytecode + constructor args (PERMIT2_ADDRESS)
  */
-export const x402ExactPermit2ProxyAddress = "0xBe08D629cc799E6C17200F454F68A61E017038C8" as const;
+export const x402ExactPermit2ProxyAddress = "" as const;
 
 /**
  * x402UptoPermit2Proxy contract address.
@@ -112,7 +112,7 @@ export const x402ExactPermit2ProxyAddress = "0xBe08D629cc799E6C17200F454F68A61E0
  * - Vanity-mined salt for prefix 0x4020 and suffix 0002
  * - Contract bytecode + constructor args (PERMIT2_ADDRESS)
  */
-export const x402UptoPermit2ProxyAddress = "0xBe08D629cc799E6C17200F454F68A61E017038C8" as const;
+export const x402UptoPermit2ProxyAddress = "" as const;
 
 /**
  * x402UptoPermit2Proxy ABI - settle function for upto payment scheme (variable amounts).
