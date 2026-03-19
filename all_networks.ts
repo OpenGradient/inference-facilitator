@@ -285,6 +285,7 @@ app.post("/settle_data", async (req, res) => {
 
 app.post("/heartbeat", async (req, res) => {
   incrementMetric("api.request.count", ["route:/heartbeat", "method:POST"]);
+  let heartbeatRequest: HeartbeatRelayRequest | null = null;
   try {
     if (!heartbeatRelayContext) {
       return res.status(503).json({
@@ -292,7 +293,7 @@ app.post("/heartbeat", async (req, res) => {
       });
     }
 
-    const heartbeatRequest = parseHeartbeatRequestBody(req.body);
+    heartbeatRequest = parseHeartbeatRequestBody(req.body);
     if (
       heartbeatRequest.contractAddress &&
       heartbeatRequest.contractAddress.toLowerCase() !==
@@ -321,7 +322,14 @@ app.post("/heartbeat", async (req, res) => {
   } catch (error) {
     incrementMetric("heartbeat.relay.failure.count", ["route:/heartbeat"]);
     const message = error instanceof Error ? error.message : "Unknown error";
-    console.error("Heartbeat relay error:", error);
+    console.error("[heartbeat-relay] Request failed:", {
+      teeId: heartbeatRequest?.teeId,
+      timestamp: heartbeatRequest?.timestamp,
+      requestedContractAddress: heartbeatRequest?.contractAddress,
+      relayContractAddress: heartbeatRelayContext?.registryContractAddress,
+      relayer: heartbeatRelayContext?.signerAddress,
+      error,
+    });
 
     const lower = message.toLowerCase();
     if (

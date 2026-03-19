@@ -662,8 +662,9 @@ export function createHeartbeatRelayContext(): HeartbeatRelayContext {
       signature,
     }): Promise<`0x${string}`> => {
       let stage: "broadcast" | "receipt" = "broadcast";
+      let txHash: `0x${string}` | undefined;
       try {
-        const txHash = await ogEvmWalletClient.writeContract({
+        txHash = await ogEvmWalletClient.writeContract({
           address: registryContractAddress,
           abi: teeRegistryHeartbeatAbi,
           functionName: "heartbeat",
@@ -686,6 +687,17 @@ export function createHeartbeatRelayContext(): HeartbeatRelayContext {
         return txHash;
       } catch (error) {
         incrementMetric("heartbeat.tx.failure.count", [`stage:${stage}`]);
+        console.error("[heartbeat-relay] Heartbeat transaction failed:", {
+          signerAddress: account.address,
+          chainId: ogEvm.id,
+          chainName: ogEvm.name,
+          registryContractAddress,
+          teeId,
+          timestamp,
+          stage,
+          txHash,
+          error,
+        });
         throw error;
       }
     },
