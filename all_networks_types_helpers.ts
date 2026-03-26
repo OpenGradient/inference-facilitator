@@ -30,7 +30,7 @@ export const PAYMENT_QUEUE_NAME = resolveQueueName(
 );
 export const DATA_SETTLEMENT_QUEUE_NAME = resolveQueueName(
   process.env.DATA_SETTLEMENT_QUEUE_NAME,
-  "x402-settle-data-queue",
+  "x402-settle-data-queue-v2",
   "DATA_SETTLEMENT_QUEUE_NAME",
 );
 export const SHUTDOWN_TIMEOUT_MS = Number(process.env.SHUTDOWN_TIMEOUT_MS || 10_000);
