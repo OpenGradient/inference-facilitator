@@ -51,6 +51,7 @@ export const DATA_SETTLEMENT_BATCH_MAX_AGE_MS = Number(
 export type SettlementType = "private" | "batch" | "individual";
 
 export type SettlementBatchData = {
+  teeId: `0x${string}`;
   inputHash: string;
   outputHash: string;
   teeSignature: string;
@@ -224,10 +225,11 @@ function parseBatchSettlementData(decoded: unknown): SettlementBatchData {
   }
 
   return {
+    teeId: toStrictBytes32(getRequiredStringField(decoded, ["tee_id"]), "teeId"),
     inputHash: getRequiredStringField(decoded, ["input_hash"]),
     outputHash: getRequiredStringField(decoded, ["output_hash"]),
     teeSignature: getRequiredStringField(decoded, ["tee_signature"]),
-    timestamp: parseUint256Field(decoded, ["tee_timestamp", "timestamp"]),
+    timestamp: parseUint256Field(decoded, ["tee_timestamp"]),
   };
 }
 

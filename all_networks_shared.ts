@@ -262,13 +262,20 @@ async function flushBatchSettlementBuffer(
 
     try {
       const values = items.map(item => [
+        toStrictBytes32(item.teeId, "teeId"),
         toStrictBytes32(item.inputHash, "inputHash"),
         toStrictBytes32(item.outputHash, "outputHash"),
         teeSignatureLeafValue(item.teeSignature),
         item.timestamp,
       ]);
 
-      const tree = StandardMerkleTree.of(values, ["bytes32", "bytes32", "bytes32", "uint256"]);
+      const tree = StandardMerkleTree.of(values, [
+        "bytes32",
+        "bytes32",
+        "bytes32",
+        "bytes32",
+        "uint256",
+      ]);
       const merkleRoot = tree.root;
       const treeData = JSON.stringify(tree.dump());
       const blobId = await uploadToWalrus(treeData, "batch-tree");
