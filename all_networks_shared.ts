@@ -22,7 +22,6 @@ import {
   HEARTBEAT_RELAY_EVM_PRIVATE_KEY_ENV,
   HEARTBEAT_RELAY_REGISTRY_CONTRACT_ENV,
   REDIS_URL,
-  teeSignatureLeafValue,
   toBytesCalldata,
   toStrictBytes32,
   type DataSettlementJobData,
@@ -265,7 +264,7 @@ async function flushBatchSettlementBuffer(
         toStrictBytes32(item.teeId, "teeId"),
         toStrictBytes32(item.inputHash, "inputHash"),
         toStrictBytes32(item.outputHash, "outputHash"),
-        teeSignatureLeafValue(item.teeSignature),
+        base64ToBytesCalldata(item.teeSignature),
         item.timestamp,
       ]);
 
@@ -273,7 +272,7 @@ async function flushBatchSettlementBuffer(
         "bytes32",
         "bytes32",
         "bytes32",
-        "bytes32",
+        "bytes",
         "uint256",
       ]);
       const merkleRoot = tree.root;
