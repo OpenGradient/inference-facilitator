@@ -30,7 +30,7 @@ export const PAYMENT_QUEUE_NAME = resolveQueueName(
 );
 export const DATA_SETTLEMENT_QUEUE_NAME = resolveQueueName(
   process.env.DATA_SETTLEMENT_QUEUE_NAME,
-  "x402-settle-data-queue",
+  "x402-settle-data-queue-v2",
   "DATA_SETTLEMENT_QUEUE_NAME",
 );
 export const SHUTDOWN_TIMEOUT_MS = Number(process.env.SHUTDOWN_TIMEOUT_MS || 10_000);
@@ -51,9 +51,11 @@ export const DATA_SETTLEMENT_BATCH_MAX_AGE_MS = Number(
 export type SettlementType = "private" | "batch" | "individual";
 
 export type SettlementBatchData = {
+  teeId: `0x${string}`;
   inputHash: string;
   outputHash: string;
   teeSignature: string;
+  timestamp: string;
 };
 
 export type SettlementIndividualData = SettlementBatchData & {
@@ -143,7 +145,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-export function getRequiredStringField(record: Record<string, unknown>, fieldNames: string[]): string {
+export function getRequiredStringField(
+  record: Record<string, unknown>,
+  fieldNames: string[],
+): string {
   for (const name of fieldNames) {
     const value = record[name];
     if (typeof value === "string" && value.length > 0) {
@@ -153,7 +158,10 @@ export function getRequiredStringField(record: Record<string, unknown>, fieldNam
   throw new Error(`Missing required settlement field. Expected one of: ${fieldNames.join(", ")}`);
 }
 
-export function getRequiredUnknownField(record: Record<string, unknown>, fieldNames: string[]): unknown {
+export function getRequiredUnknownField(
+  record: Record<string, unknown>,
+  fieldNames: string[],
+): unknown {
   for (const name of fieldNames) {
     if (name in record) {
       return record[name];
@@ -167,13 +175,17 @@ export function parseUint256Field(record: Record<string, unknown>, fieldNames: s
 
   if (typeof raw === "number") {
     if (!Number.isInteger(raw) || raw < 0) {
-      throw new Error(`Invalid uint256 field. Expected non-negative integer for: ${fieldNames.join(", ")}`);
+      throw new Error(
+        `Invalid uint256 field. Expected non-negative integer for: ${fieldNames.join(", ")}`,
+      );
     }
     return raw.toString();
   }
 
   if (typeof raw !== "string") {
-    throw new Error(`Invalid uint256 field. Expected string or number for: ${fieldNames.join(", ")}`);
+    throw new Error(
+      `Invalid uint256 field. Expected string or number for: ${fieldNames.join(", ")}`,
+    );
   }
 
   const trimmed = raw.trim();
@@ -196,7 +208,10 @@ export function parseUint256Field(record: Record<string, unknown>, fieldNames: s
   return trimmed;
 }
 
-function parseEvmAddressField(record: Record<string, unknown>, fieldNames: string[]): `0x${string}` {
+function parseEvmAddressField(
+  record: Record<string, unknown>,
+  fieldNames: string[],
+): `0x${string}` {
   const value = getRequiredStringField(record, fieldNames);
   if (!isAddress(value)) {
     throw new Error(`Invalid EVM address for: ${fieldNames.join(", ")}`);
@@ -210,20 +225,11 @@ function parseBatchSettlementData(decoded: unknown): SettlementBatchData {
   }
 
   return {
-    inputHash: getRequiredStringField(decoded, ["inputHash", "input_hash", "input hash", "input-hash"]),
-    outputHash: getRequiredStringField(decoded, [
-      "outputHash",
-      "output_hash",
-      "output hash",
-      "output-hash",
-    ]),
-    teeSignature: getRequiredStringField(decoded, [
-      "teeSignature",
-      "tee_signature",
-      "tee signature",
-      "tee-signature",
-      "tee singature",
-    ]),
+    teeId: toStrictBytes32(getRequiredStringField(decoded, ["tee_id"]), "teeId"),
+    inputHash: getRequiredStringField(decoded, ["input_hash"]),
+    outputHash: getRequiredStringField(decoded, ["output_hash"]),
+    teeSignature: getRequiredStringField(decoded, ["tee_signature"]),
+    timestamp: parseUint256Field(decoded, ["tee_timestamp"]),
   };
 }
 
@@ -233,23 +239,9 @@ function parseIndividualSettlementData(decoded: unknown): SettlementIndividualDa
   }
 
   const batchData = parseBatchSettlementData(decoded);
-  const teeId = toStrictBytes32(
-    getRequiredStringField(decoded, ["teeId", "tee_id", "tee id", "tee-id"]),
-    "teeId",
-  );
-  const timestamp = parseUint256Field(decoded, [
-    "timestamp",
-    "timeStamp",
-    "time_stamp",
-    "tee_timestamp",
-  ]);
-  const ethAddress = parseEvmAddressField(decoded, [
-    "ethAddress",
-    "eth_address",
-    "eth address",
-    "eth-address",
-    "address",
-  ]);
+  const teeId = toStrictBytes32(getRequiredStringField(decoded, ["tee_id"]), "teeId");
+  const timestamp = parseUint256Field(decoded, ["timestamp"]);
+  const ethAddress = parseEvmAddressField(decoded, ["eth_address"]);
 
   return {
     ...batchData,

@@ -22,7 +22,6 @@ import {
   HEARTBEAT_RELAY_EVM_PRIVATE_KEY_ENV,
   HEARTBEAT_RELAY_REGISTRY_CONTRACT_ENV,
   REDIS_URL,
-  teeSignatureLeafValue,
   toBytesCalldata,
   toStrictBytes32,
   type DataSettlementJobData,
@@ -262,12 +261,20 @@ async function flushBatchSettlementBuffer(
 
     try {
       const values = items.map(item => [
+        toStrictBytes32(item.teeId, "teeId"),
         toStrictBytes32(item.inputHash, "inputHash"),
         toStrictBytes32(item.outputHash, "outputHash"),
-        teeSignatureLeafValue(item.teeSignature),
+        base64ToBytesCalldata(item.teeSignature),
+        item.timestamp,
       ]);
 
-      const tree = StandardMerkleTree.of(values, ["bytes32", "bytes32", "bytes32"]);
+      const tree = StandardMerkleTree.of(values, [
+        "bytes32",
+        "bytes32",
+        "bytes32",
+        "bytes",
+        "uint256",
+      ]);
       const merkleRoot = tree.root;
       const treeData = JSON.stringify(tree.dump());
       const blobId = await uploadToWalrus(treeData, "batch-tree");
@@ -375,7 +382,6 @@ export async function uploadToWalrus(
       body: data,
       headers: {
         "Content-Type": "application/json",
-        
       },
       signal: abortController.signal,
     });
@@ -572,7 +578,11 @@ export function createDataWorkerContext(): DataWorkerContext {
         }
         return txHash;
       } catch (error) {
-        incrementMetric("data.tx.failure.count", ["worker:data", "tx_type:batch", `stage:${stage}`]);
+        incrementMetric("data.tx.failure.count", [
+          "worker:data",
+          "tx_type:batch",
+          `stage:${stage}`,
+        ]);
         throw error;
       }
     },
@@ -656,11 +666,7 @@ export function createHeartbeatRelayContext(): HeartbeatRelayContext {
     chainId: ogEvm.id,
     chainName: ogEvm.name,
     registryContractAddress,
-    submitHeartbeat: async ({
-      teeId,
-      timestamp,
-      signature,
-    }): Promise<`0x${string}`> => {
+    submitHeartbeat: async ({ teeId, timestamp, signature }): Promise<`0x${string}`> => {
       let stage: "broadcast" | "receipt" = "broadcast";
       let txHash: `0x${string}` | undefined;
       try {
