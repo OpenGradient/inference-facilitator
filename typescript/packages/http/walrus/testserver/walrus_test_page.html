@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Walrus Batch Verifier</title>
+    <script type="importmap">
+      {
+        "imports": {
+          "@x402/walrus": "/dist/esm/index.mjs",
+          "@openzeppelin/merkle-tree": "https://esm.sh/@openzeppelin/merkle-tree@1.0.8",
+          "viem": "https://esm.sh/viem@2.39.3"
+        }
+      }
+    </script>
+    <style>
+      :root {
+        --bg: #f6f1e8;
+        --panel: rgba(255, 252, 246, 0.92);
+        --panel-strong: #fffaf2;
+        --ink: #1f2430;
+        --muted: #6d7280;
+        --line: rgba(31, 36, 48, 0.12);
+        --accent: #0c6c63;
+        --accent-2: #df6d3c;
+        --danger: #b53b2d;
+        --shadow: 0 24px 70px rgba(53, 45, 29, 0.12);
+        --radius: 22px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        color: var(--ink);
+        font-family:
+          "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Palatino, Georgia, serif;
+        background:
+          radial-gradient(circle at top left, rgba(223, 109, 60, 0.18), transparent 28%),
+          radial-gradient(circle at top right, rgba(12, 108, 99, 0.16), transparent 26%),
+          linear-gradient(180deg, #fbf7ef 0%, var(--bg) 100%);
+      }
+
+      main {
+        width: min(1180px, calc(100vw - 32px));
+        margin: 32px auto 48px;
+      }
+
+      .hero,
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(12px);
+      }
+
+      .hero {
+        padding: 28px;
+        margin-bottom: 18px;
+        position: relative;
+        overflow: hidden;
+      }
+
+      .hero::after {
+        content: "";
+        position: absolute;
+        inset: auto -80px -90px auto;
+        width: 220px;
+        height: 220px;
+        background: radial-gradient(circle, rgba(223, 109, 60, 0.25), transparent 70%);
+        pointer-events: none;
+      }
+
+      .eyebrow {
+        margin: 0 0 8px;
+        font-size: 12px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--accent);
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(32px, 5vw, 56px);
+        line-height: 0.98;
+        max-width: 10ch;
+      }
+
+      .subcopy {
+        margin: 14px 0 0;
+        max-width: 72ch;
+        font-size: 16px;
+        line-height: 1.6;
+        color: var(--muted);
+      }
+
+      .layout {
+        display: grid;
+        grid-template-columns: 380px minmax(0, 1fr);
+        gap: 18px;
+      }
+
+      .panel {
+        padding: 20px;
+      }
+
+      .panel h2 {
+        margin: 0 0 14px;
+        font-size: 22px;
+      }
+
+      .hint {
+        margin: -4px 0 16px;
+        font-size: 14px;
+        line-height: 1.5;
+        color: var(--muted);
+      }
+
+      .field {
+        margin-bottom: 14px;
+      }
+
+      .field label {
+        display: block;
+        margin-bottom: 7px;
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+      }
+
+      input,
+      select,
+      textarea {
+        width: 100%;
+        border: 1px solid rgba(31, 36, 48, 0.14);
+        border-radius: 16px;
+        padding: 12px 14px;
+        font: inherit;
+        color: var(--ink);
+        background: rgba(255, 255, 255, 0.76);
+        transition:
+          border-color 0.2s ease,
+          box-shadow 0.2s ease,
+          transform 0.2s ease;
+      }
+
+      input:focus,
+      textarea:focus {
+        outline: none;
+        border-color: rgba(12, 108, 99, 0.55);
+        box-shadow: 0 0 0 4px rgba(12, 108, 99, 0.1);
+        transform: translateY(-1px);
+      }
+
+      textarea {
+        min-height: 94px;
+        resize: vertical;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 18px;
+      }
+
+      button {
+        appearance: none;
+        border: none;
+        border-radius: 999px;
+        padding: 11px 16px;
+        font: inherit;
+        font-weight: 700;
+        cursor: pointer;
+        transition:
+          transform 0.18s ease,
+          opacity 0.18s ease,
+          box-shadow 0.18s ease;
+      }
+
+      button:hover {
+        transform: translateY(-1px);
+      }
+
+      button:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+        transform: none;
+      }
+
+      .primary {
+        color: white;
+        background: linear-gradient(135deg, var(--accent) 0%, #0b8d80 100%);
+        box-shadow: 0 14px 30px rgba(12, 108, 99, 0.22);
+      }
+
+      .secondary {
+        color: var(--ink);
+        background: white;
+        border: 1px solid rgba(31, 36, 48, 0.12);
+      }
+
+      .ghost {
+        color: var(--accent);
+        background: rgba(12, 108, 99, 0.08);
+      }
+
+      .status {
+        margin-top: 16px;
+        padding: 12px 14px;
+        border-radius: 16px;
+        border: 1px solid rgba(31, 36, 48, 0.1);
+        background: rgba(255, 255, 255, 0.72);
+        white-space: pre-wrap;
+        font-size: 14px;
+        line-height: 1.5;
+      }
+
+      .status.error {
+        color: var(--danger);
+        border-color: rgba(181, 59, 45, 0.18);
+        background: rgba(181, 59, 45, 0.06);
+      }
+
+      .status.success {
+        color: var(--accent);
+      }
+
+      .stack {
+        display: grid;
+        gap: 18px;
+      }
+
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+
+      .stat {
+        padding: 14px;
+        border-radius: 18px;
+        background: var(--panel-strong);
+        border: 1px solid var(--line);
+      }
+
+      .stat-label {
+        display: block;
+        font-size: 12px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+
+      .stat-value {
+        display: block;
+        margin-top: 8px;
+        font-size: 15px;
+        word-break: break-word;
+      }
+
+      .table-wrap {
+        overflow: auto;
+        border-radius: 18px;
+        border: 1px solid var(--line);
+        background: white;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        min-width: 860px;
+      }
+
+      th,
+      td {
+        text-align: left;
+        padding: 12px 14px;
+        border-bottom: 1px solid rgba(31, 36, 48, 0.08);
+        vertical-align: top;
+        font-size: 14px;
+      }
+
+      th {
+        font-size: 12px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--muted);
+        background: #fffaf2;
+      }
+
+      code,
+      pre {
+        font-family: "SFMono-Regular", "Cascadia Code", "Liberation Mono", Menlo, monospace;
+      }
+
+      .mono {
+        word-break: break-all;
+      }
+
+      pre {
+        margin: 0;
+        padding: 16px;
+        border-radius: 18px;
+        background: #1f2430;
+        color: #edf2f7;
+        overflow: auto;
+        font-size: 13px;
+        line-height: 1.6;
+      }
+
+      .section-title {
+        margin: 0 0 12px;
+        font-size: 18px;
+      }
+
+      @media (max-width: 960px) {
+        .layout {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="hero">
+        <p class="eyebrow">Walrus + TEE Signature Verify</p>
+        <h1>Batch Blob Test Page</h1>
+        <p class="subcopy">
+          This page imports the built local package from <code>/dist/esm/index.mjs</code>, fetches
+          a Walrus batch blob, shows every decoded item, and can run the verifier contract&apos;s
+          <code>verifySignature(...)</code> call from the browser.
+        </p>
+      </section>
+
+      <div class="layout">
+        <section class="panel">
+          <h2>Inputs</h2>
+          <p class="hint">
+            Paste a blob ID first. You can use either the plain Walrus ID or a hex-encoded
+            <code>0x...</code> version of that ID. After the blob loads, click any row to populate
+            the form with <code>tee_id</code>, <code>input_hash</code>, <code>output_hash</code>,
+            <code>tee_signature</code>, and <code>tee_timestamp</code> for direct signature
+            verification.
+          </p>
+
+          <div class="field">
+            <label for="aggregatorUrl">Aggregator URL</label>
+            <input id="aggregatorUrl" value="https://aggregator.suicore.com" />
+          </div>
+
+          <div class="field">
+            <label for="blobId">Walrus Blob ID</label>
+            <input id="blobId" placeholder="Paste blob id or 0x-encoded blob id" />
+          </div>
+
+          <div class="field">
+            <label for="teeId">tee_id</label>
+            <input id="teeId" placeholder="0x..." />
+          </div>
+
+          <div class="field">
+            <label for="inputHash">input_hash</label>
+            <input id="inputHash" placeholder="0x..." />
+          </div>
+
+          <div class="field">
+            <label for="outputHash">output_hash</label>
+            <input id="outputHash" placeholder="0x..." />
+          </div>
+
+          <div class="field">
+            <label for="teeSignature">tee_signature</label>
+            <textarea
+              id="teeSignature"
+              placeholder="Paste raw tee_signature. If you load an item from the blob, this will be filled with the stored bytes hex."
+            ></textarea>
+          </div>
+
+          <div class="field">
+            <label for="teeTimestamp">tee_timestamp</label>
+            <input id="teeTimestamp" placeholder="1741809483" />
+          </div>
+
+          <div class="field">
+            <label for="signatureEncoding">tee_signature Encoding</label>
+            <select id="signatureEncoding">
+              <option value="auto">auto</option>
+              <option value="hex">hex</option>
+              <option value="base64">base64</option>
+              <option value="utf8">utf8</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label for="rpcUrl">RPC URL</label>
+            <input id="rpcUrl" value="https://ogevmdevnet.opengradient.ai" />
+          </div>
+
+          <div class="field">
+            <label for="verifierContractAddress">Verifier Contract Address</label>
+            <input
+              id="verifierContractAddress"
+              value="0xFC4aCC078AD611081d82784C985F1c979A7aEC20"
+            />
+          </div>
+
+          <div class="actions">
+            <button id="fetchBlobButton" class="primary">Fetch Blob</button>
+            <button id="verifyItemButton" class="secondary">Verify Item</button>
+            <button id="verifyBlobButton" class="ghost">Verify Full Blob</button>
+          </div>
+
+          <div id="status" class="status">Ready.</div>
+        </section>
+
+        <section class="stack">
+          <section class="panel">
+            <h2>Blob Details</h2>
+            <div class="stats">
+              <div class="stat">
+                <span class="stat-label">Blob ID</span>
+                <span id="blobIdStat" class="stat-value mono">-</span>
+              </div>
+              <div class="stat">
+                <span class="stat-label">Blob Root</span>
+                <span id="blobRootStat" class="stat-value mono">-</span>
+              </div>
+              <div class="stat">
+                <span class="stat-label">Items</span>
+                <span id="itemCountStat" class="stat-value">0</span>
+              </div>
+            </div>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>tee_id</th>
+                    <th>input_hash</th>
+                    <th>output_hash</th>
+                    <th>tee_signature</th>
+                    <th>tee_timestamp</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody id="itemsTableBody">
+                  <tr>
+                    <td colspan="7">No blob loaded yet.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="panel">
+            <h3 class="section-title">Selected Payload</h3>
+            <pre id="selectedPayloadOutput">No item selected yet.</pre>
+          </section>
+
+          <section class="panel">
+            <h3 class="section-title">Verification Result</h3>
+            <pre id="verificationOutput">No verification run yet.</pre>
+          </section>
+        </section>
+      </div>
+    </main>
+
+    <script type="module" src="./walrus_test_page.js"></script>
+  </body>
+</html>
