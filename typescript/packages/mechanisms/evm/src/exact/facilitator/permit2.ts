@@ -15,6 +15,10 @@ import {
 import { FacilitatorEvmSigner } from "../../signer";
 import { ExactPermit2Payload } from "../../types";
 
+function toErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 // ERC20 allowance ABI for checking Permit2 approval
 const erc20AllowanceABI = [
   {
@@ -167,10 +171,13 @@ export async function verifyPermit2(
         payer,
       };
     }
-  } catch {
+  } catch (error) {
+    const message = toErrorMessage(error);
+    console.warn("Permit2 signature verification threw an error:", message);
     return {
       isValid: false,
-      invalidReason: "invalid_permit2_signature",
+      invalidReason: "invalid_permit2_signature_verification_error",
+      invalidMessage: message,
       payer,
     };
   }
@@ -191,8 +198,15 @@ export async function verifyPermit2(
         payer,
       };
     }
-  } catch {
-    // If we can't check allowance, continue - settlement will fail if insufficient
+  } catch (error) {
+    const message = toErrorMessage(error);
+    console.warn("Permit2 allowance check failed during verification:", message);
+    return {
+      isValid: false,
+      invalidReason: "permit2_allowance_check_failed",
+      invalidMessage: message,
+      payer,
+    };
   }
 
   // Check balance
@@ -212,8 +226,15 @@ export async function verifyPermit2(
         payer,
       };
     }
-  } catch {
-    // If we can't check balance, continue with other validations
+  } catch (error) {
+    const message = toErrorMessage(error);
+    console.warn("Permit2 balance check failed during verification:", message);
+    return {
+      isValid: false,
+      invalidReason: "permit2_balance_check_failed",
+      invalidMessage: message,
+      payer,
+    };
   }
 
   return {
