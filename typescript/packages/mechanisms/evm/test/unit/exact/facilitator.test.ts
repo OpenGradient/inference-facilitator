@@ -460,6 +460,148 @@ describe("ExactEvmScheme (Facilitator)", () => {
       expect(result.invalidReason).toBe("invalid_permit2_recipient_mismatch");
       expect(result.payer).toBe(mockClientSigner.address);
     });
+
+    it("should fail Permit2 verification when allowance check throws", async () => {
+      const requirements: PaymentRequirements = {
+        scheme: "exact",
+        network: "eip155:84532",
+        amount: "1000000",
+        asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+        payTo: "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0",
+        maxTimeoutSeconds: 300,
+        extra: { name: "USDC", version: "2", assetTransferMethod: "permit2" },
+      };
+
+      mockFacilitatorSigner.readContract = vi
+        .fn()
+        .mockRejectedValue(new Error("allowance rpc timeout"));
+
+      const permit2Payload: PaymentPayload = {
+        x402Version: 2,
+        payload: {
+          signature: "0xmocksignature",
+          permit2Authorization: {
+            from: mockClientSigner.address,
+            permitted: {
+              token: requirements.asset,
+              amount: requirements.amount,
+            },
+            spender: x402ExactPermit2ProxyAddress,
+            nonce: "12345",
+            deadline: "999999999999",
+            witness: {
+              to: requirements.payTo,
+              validAfter: "0",
+              extra: "0x",
+            },
+          },
+        },
+        accepted: requirements,
+        resource: { url: "", description: "", mimeType: "" },
+      };
+
+      const result = await facilitator.verify(permit2Payload, requirements);
+
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("permit2_allowance_check_failed");
+      expect(result.invalidMessage).toContain("allowance rpc timeout");
+      expect(result.payer).toBe(mockClientSigner.address);
+    });
+
+    it("should fail Permit2 verification when balance check throws", async () => {
+      const requirements: PaymentRequirements = {
+        scheme: "exact",
+        network: "eip155:84532",
+        amount: "1000000",
+        asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+        payTo: "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0",
+        maxTimeoutSeconds: 300,
+        extra: { name: "USDC", version: "2", assetTransferMethod: "permit2" },
+      };
+
+      mockFacilitatorSigner.readContract = vi
+        .fn()
+        .mockResolvedValueOnce(BigInt("10000000000"))
+        .mockRejectedValueOnce(new Error("balance rpc timeout"));
+
+      const permit2Payload: PaymentPayload = {
+        x402Version: 2,
+        payload: {
+          signature: "0xmocksignature",
+          permit2Authorization: {
+            from: mockClientSigner.address,
+            permitted: {
+              token: requirements.asset,
+              amount: requirements.amount,
+            },
+            spender: x402ExactPermit2ProxyAddress,
+            nonce: "12345",
+            deadline: "999999999999",
+            witness: {
+              to: requirements.payTo,
+              validAfter: "0",
+              extra: "0x",
+            },
+          },
+        },
+        accepted: requirements,
+        resource: { url: "", description: "", mimeType: "" },
+      };
+
+      const result = await facilitator.verify(permit2Payload, requirements);
+
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("permit2_balance_check_failed");
+      expect(result.invalidMessage).toContain("balance rpc timeout");
+      expect(result.payer).toBe(mockClientSigner.address);
+    });
+
+    it("should return a specific code when Permit2 signature verification throws", async () => {
+      const requirements: PaymentRequirements = {
+        scheme: "exact",
+        network: "eip155:84532",
+        amount: "1000000",
+        asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+        payTo: "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0",
+        maxTimeoutSeconds: 300,
+        extra: { name: "USDC", version: "2", assetTransferMethod: "permit2" },
+      };
+
+      mockFacilitatorSigner.verifyTypedData = vi
+        .fn()
+        .mockRejectedValue(new Error("typed-data verifier crashed"));
+
+      const permit2Payload: PaymentPayload = {
+        x402Version: 2,
+        payload: {
+          signature: "0xmocksignature",
+          permit2Authorization: {
+            from: mockClientSigner.address,
+            permitted: {
+              token: requirements.asset,
+              amount: requirements.amount,
+            },
+            spender: x402ExactPermit2ProxyAddress,
+            nonce: "12345",
+            deadline: "999999999999",
+            witness: {
+              to: requirements.payTo,
+              validAfter: "0",
+              extra: "0x",
+            },
+          },
+        },
+        accepted: requirements,
+        resource: { url: "", description: "", mimeType: "" },
+      };
+
+      const result = await facilitator.verify(permit2Payload, requirements);
+
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_permit2_signature_verification_error");
+      expect(result.invalidMessage).toContain("typed-data verifier crashed");
+      expect(result.payer).toBe(mockClientSigner.address);
+    });
   });
 
   describe("Permit2 settlement", () => {
@@ -556,6 +698,37 @@ describe("ExactEvmScheme (Facilitator)", () => {
   });
 
   describe("Error cases", () => {
+    it("should fail EIP-3009 verification when balance check throws", async () => {
+      const requirements: PaymentRequirements = {
+        scheme: "exact",
+        network: "eip155:84532",
+        amount: "1000000",
+        asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+        payTo: "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0",
+        maxTimeoutSeconds: 300,
+        extra: { name: "USDC", version: "2" },
+      };
+
+      mockFacilitatorSigner.readContract = vi
+        .fn()
+        .mockRejectedValue(new Error("balance rpc unavailable"));
+
+      const paymentPayload = await client.createPaymentPayload(2, requirements);
+
+      const fullPayload: PaymentPayload = {
+        ...paymentPayload,
+        accepted: requirements,
+        resource: { url: "", description: "", mimeType: "" },
+      };
+
+      const result = await facilitator.verify(fullPayload, requirements);
+
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_exact_evm_payload_balance_check_failed");
+      expect(result.invalidMessage).toContain("balance rpc unavailable");
+      expect(result.payer).toBe(mockClientSigner.address);
+    });
+
     it("should handle invalid signature format", async () => {
       const requirements: PaymentRequirements = {
         scheme: "exact",

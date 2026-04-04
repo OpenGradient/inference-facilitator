@@ -33,6 +33,10 @@ import type { FacilitatorSvmSigner } from "../../signer";
 import type { ExactSvmPayloadV2 } from "../../types";
 import { decodeTransactionFromPayload, getTokenPayerFromTransaction } from "../../utils";
 
+function toErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 /**
  * SVM facilitator implementation for the Exact payment scheme.
  */
@@ -129,7 +133,8 @@ export class ExactSvmScheme implements SchemeNetworkFacilitator {
     let transaction;
     try {
       transaction = decodeTransactionFromPayload(exactSvmPayload);
-    } catch {
+    } catch (error) {
+      console.warn("Failed to decode SVM transaction payload:", toErrorMessage(error));
       return {
         isValid: false,
         invalidReason: "invalid_exact_svm_payload_transaction_could_not_be_decoded",
@@ -200,7 +205,8 @@ export class ExactSvmScheme implements SchemeNetworkFacilitator {
       } else {
         parsedTransfer = parseTransferCheckedInstruction2022(transferIx as never);
       }
-    } catch {
+    } catch (error) {
+      console.warn("Failed to parse SVM transfer instruction:", toErrorMessage(error));
       return {
         isValid: false,
         invalidReason: "invalid_exact_svm_payload_no_transfer_instruction",
@@ -248,10 +254,13 @@ export class ExactSvmScheme implements SchemeNetworkFacilitator {
           payer,
         };
       }
-    } catch {
+    } catch (error) {
+      const message = toErrorMessage(error);
+      console.warn("Failed to derive expected recipient ATA during SVM verification:", message);
       return {
         isValid: false,
-        invalidReason: "invalid_exact_svm_payload_recipient_mismatch",
+        invalidReason: "invalid_exact_svm_payload_recipient_ata_lookup_failed",
+        invalidMessage: message,
         payer,
       };
     }

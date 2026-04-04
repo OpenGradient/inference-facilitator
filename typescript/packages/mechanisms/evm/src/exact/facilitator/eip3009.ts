@@ -9,6 +9,10 @@ import { authorizationTypes, eip3009ABI } from "../../constants";
 import { FacilitatorEvmSigner } from "../../signer";
 import { ExactEIP3009Payload } from "../../types";
 
+function toErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export interface EIP3009FacilitatorConfig {
   /**
    * If enabled, the facilitator will deploy ERC-4337 smart wallets
@@ -101,7 +105,9 @@ export async function verifyEIP3009(
         payer,
       };
     }
-  } catch {
+  } catch (error) {
+    console.warn("EIP-3009 signature verification threw an error:", toErrorMessage(error));
+
     // Signature verification failed - could be an undeployed smart wallet
     // Check if smart wallet is deployed
     const signature = eip3009Payload.signature!;
@@ -110,11 +116,35 @@ export async function verifyEIP3009(
 
     if (isSmartWallet) {
       const payerAddress = eip3009Payload.authorization.from;
-      const bytecode = await signer.getCode({ address: payerAddress });
+      let bytecode: Hex;
+      try {
+        bytecode = await signer.getCode({ address: payerAddress });
+      } catch (getCodeError) {
+        const message = toErrorMessage(getCodeError);
+        console.warn("Failed to inspect smart wallet bytecode during verification:", message);
+        return {
+          isValid: false,
+          invalidReason: "invalid_exact_evm_payload_signature_verification_error",
+          invalidMessage: message,
+          payer,
+        };
+      }
 
       if (!bytecode || bytecode === "0x") {
         // Wallet is not deployed. Check if it's EIP-6492 with deployment info.
-        const erc6492Data = parseErc6492Signature(signature);
+        let erc6492Data: ReturnType<typeof parseErc6492Signature>;
+        try {
+          erc6492Data = parseErc6492Signature(signature);
+        } catch (parseError) {
+          const message = toErrorMessage(parseError);
+          console.warn("Failed to parse EIP-6492 signature payload:", message);
+          return {
+            isValid: false,
+            invalidReason: "invalid_exact_evm_payload_signature",
+            invalidMessage: message,
+            payer,
+          };
+        }
         const hasDeploymentInfo =
           erc6492Data.address &&
           erc6492Data.data &&
@@ -192,8 +222,15 @@ export async function verifyEIP3009(
         payer,
       };
     }
-  } catch {
-    // If we can't check balance, continue with other validations
+  } catch (error) {
+    const message = toErrorMessage(error);
+    console.warn("EIP-3009 balance check failed during verification:", message);
+    return {
+      isValid: false,
+      invalidReason: "invalid_exact_evm_payload_balance_check_failed",
+      invalidMessage: message,
+      payer,
+    };
   }
 
   // Verify amount is sufficient
