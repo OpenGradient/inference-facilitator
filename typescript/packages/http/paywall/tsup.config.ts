@@ -4,7 +4,6 @@ const baseConfig = {
   entry: {
     index: "src/index.ts",
     "evm/index": "src/evm/index.ts",
-    "svm/index": "src/svm/index.ts",
   },
   dts: {
     resolve: true,
