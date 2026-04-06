@@ -1,18 +1,29 @@
-import { base58 } from "@scure/base";
-import { createKeyPairSignerFromBytes } from "@solana/kit";
 import { x402Facilitator } from "@x402/core/facilitator";
-import { toFacilitatorEvmSigner } from "@x402/evm";
+import {
+  EIP2612_GAS_SPONSORING,
+  createErc20ApprovalGasSponsoringExtension,
+  type Erc20ApprovalGasSponsoringSigner,
+} from "@x402/extensions";
+import { toFacilitatorEvmSigner, type FacilitatorEvmSigner } from "@x402/evm";
 import { ExactEvmScheme } from "@x402/evm/exact/facilitator";
 import { UptoEvmScheme } from "@x402/evm/upto/facilitator";
-import { toFacilitatorSvmSigner } from "@x402/svm";
-import { ExactSvmScheme } from "@x402/svm/exact/facilitator";
 import { StandardMerkleTree } from "@openzeppelin/merkle-tree";
 import type { RedisOptions } from "ioredis";
-import { createWalletClient, defineChain, http, parseGwei, publicActions, toHex } from "viem";
+import {
+  createWalletClient,
+  defineChain,
+  http,
+  parseGwei,
+  parseTransaction,
+  publicActions,
+  recoverTransactionAddress,
+  toHex,
+} from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
 import { gaugeMetric, histogramMetric, incrementMetric } from "./metrics.js";
 import {
+  BASE_SEPOLIA_NETWORK,
   base64ToBytesCalldata,
   DATA_SETTLEMENT_BATCH_BUFFER_SIZE,
   DATA_SETTLEMENT_BATCH_IDLE_TIMEOUT_MS,
@@ -21,6 +32,7 @@ import {
   DATA_WORKER_SETTLEMENT_CONTRACT_ENV,
   HEARTBEAT_RELAY_EVM_PRIVATE_KEY_ENV,
   HEARTBEAT_RELAY_REGISTRY_CONTRACT_ENV,
+  OG_EVM_NETWORK,
   REDIS_URL,
   toBytesCalldata,
   toStrictBytes32,
@@ -87,6 +99,21 @@ type WalrusUploadResponse = {
   alreadyCertified?: {
     blobId: string;
   };
+};
+
+const DEFAULT_SPONSORED_RAW_TX_GAS = 70_000n;
+const DEFAULT_SPONSORED_RAW_TX_MAX_FEE_PER_GAS = 1_000_000_000n;
+
+type SponsoredGasWalletClient = {
+  getBalance(args: { address: `0x${string}` }): Promise<bigint>;
+  sendTransaction(args: {
+    to: `0x${string}`;
+    data?: `0x${string}`;
+    gas?: bigint;
+    value?: bigint;
+  }): Promise<`0x${string}`>;
+  waitForTransactionReceipt(args: { hash: `0x${string}` }): Promise<{ status: string }>;
+  sendRawTransaction(args: { serializedTransaction: `0x${string}` }): Promise<`0x${string}`>;
 };
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
@@ -731,16 +758,78 @@ export function createBullMqConnection(): RedisOptions {
   return options;
 }
 
+function createErc20ApprovalGasSponsorSigner(args: {
+  signer: FacilitatorEvmSigner;
+  walletClient: SponsoredGasWalletClient;
+}): Erc20ApprovalGasSponsoringSigner {
+  return {
+    ...args.signer,
+    sendTransactions: async transactions => {
+      const hashes: `0x${string}`[] = [];
+
+      for (const transaction of transactions) {
+        let hash: `0x${string}`;
+
+        if (typeof transaction === "string") {
+          const parsed = parseTransaction(transaction);
+          const payerAddress = await recoverTransactionAddress({
+            serializedTransaction: transaction,
+          });
+          const gas = parsed.gas ?? DEFAULT_SPONSORED_RAW_TX_GAS;
+          const maxFeePerGas =
+            parsed.maxFeePerGas ?? parsed.gasPrice ?? DEFAULT_SPONSORED_RAW_TX_MAX_FEE_PER_GAS;
+          const gasCost = gas * maxFeePerGas;
+          const payerBalance = await args.walletClient.getBalance({ address: payerAddress });
+
+          if (payerBalance < gasCost) {
+            const deficit = gasCost - payerBalance;
+            console.log(
+              `[payment-worker] funding ${payerAddress} with ${deficit.toString()} wei for sponsored approval gas`,
+            );
+
+            const fundingHash = await args.walletClient.sendTransaction({
+              to: payerAddress,
+              value: deficit,
+            });
+            const fundingReceipt = await args.walletClient.waitForTransactionReceipt({
+              hash: fundingHash,
+            });
+
+            if (fundingReceipt.status !== "success") {
+              throw new Error(`gas_funding_failed: ${fundingHash}`);
+            }
+          }
+
+          hash = await args.walletClient.sendRawTransaction({
+            serializedTransaction: transaction,
+          });
+        } else {
+          hash = await args.walletClient.sendTransaction({
+            to: transaction.to,
+            data: transaction.data,
+            gas: transaction.gas,
+          });
+        }
+
+        const receipt = await args.walletClient.waitForTransactionReceipt({ hash });
+        if (receipt.status !== "success") {
+          throw new Error(`transaction_failed: ${hash}`);
+        }
+
+        hashes.push(hash);
+      }
+
+      return hashes;
+    },
+  };
+}
+
 export async function createFacilitator(): Promise<x402Facilitator> {
   const evmPrivateKey = (process.env.PAYMENT_WORKER_EVM_PRIVATE_KEY ||
     process.env.EVM_PRIVATE_KEY) as `0x${string}` | undefined;
-  const svmPrivateKey = (process.env.PAYMENT_WORKER_SVM_PRIVATE_KEY ||
-    process.env.SVM_PRIVATE_KEY) as string | undefined;
 
-  if (!evmPrivateKey && !svmPrivateKey) {
-    throw new Error(
-      "At least one of PAYMENT_WORKER_EVM_PRIVATE_KEY/EVM_PRIVATE_KEY or PAYMENT_WORKER_SVM_PRIVATE_KEY/SVM_PRIVATE_KEY is required",
-    );
+  if (!evmPrivateKey) {
+    throw new Error("PAYMENT_WORKER_EVM_PRIVATE_KEY or EVM_PRIVATE_KEY is required");
   }
 
   const facilitator = new x402Facilitator()
@@ -762,10 +851,6 @@ export async function createFacilitator(): Promise<x402Facilitator> {
     .onSettleFailure(async context => {
       console.log("Settle failure", context);
     });
-
-  const EVM_NETWORK = "eip155:10740";
-  const BASE_TESTNET_NETWORK = "eip155:84532";
-  const SVM_NETWORK = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
 
   if (evmPrivateKey) {
     const evmAccount = privateKeyToAccount(evmPrivateKey);
@@ -869,30 +954,49 @@ export async function createFacilitator(): Promise<x402Facilitator> {
         baseViemClient.waitForTransactionReceipt(args),
     });
 
+    const erc20ApprovalSigners = new Map<string, Erc20ApprovalGasSponsoringSigner>([
+      [
+        OG_EVM_NETWORK,
+        createErc20ApprovalGasSponsorSigner({
+          signer: evmSigner,
+          walletClient: viemClient,
+        }),
+      ],
+      [
+        BASE_SEPOLIA_NETWORK,
+        createErc20ApprovalGasSponsorSigner({
+          signer: baseEvmSigner,
+          walletClient: baseViemClient,
+        }),
+      ],
+    ]);
+
     facilitator.register(
-      EVM_NETWORK,
+      OG_EVM_NETWORK,
       new ExactEvmScheme(evmSigner, { deployERC4337WithEIP6492: true }),
     );
     facilitator.register(
-      EVM_NETWORK,
-      new UptoEvmScheme(evmSigner, { deployERC4337WithEIP6492: true }),
+      OG_EVM_NETWORK,
+      new UptoEvmScheme(evmSigner),
     );
 
     facilitator.register(
-      BASE_TESTNET_NETWORK,
+      BASE_SEPOLIA_NETWORK,
       new ExactEvmScheme(baseEvmSigner, { deployERC4337WithEIP6492: true }),
     );
     facilitator.register(
-      BASE_TESTNET_NETWORK,
-      new UptoEvmScheme(baseEvmSigner, { deployERC4337WithEIP6492: true }),
+      BASE_SEPOLIA_NETWORK,
+      new UptoEvmScheme(baseEvmSigner),
     );
-  }
 
-  if (svmPrivateKey) {
-    const svmAccount = await createKeyPairSignerFromBytes(base58.decode(svmPrivateKey));
-    console.info(`SVM Facilitator account: ${svmAccount.address}`);
-    const svmSigner = toFacilitatorSvmSigner(svmAccount);
-    facilitator.register(SVM_NETWORK, new ExactSvmScheme(svmSigner));
+    facilitator
+      .registerExtension(EIP2612_GAS_SPONSORING)
+      .registerExtension(
+        createErc20ApprovalGasSponsoringExtension(
+          erc20ApprovalSigners.get(OG_EVM_NETWORK)!,
+          network => erc20ApprovalSigners.get(network),
+        ),
+      );
   }
 
   return facilitator;

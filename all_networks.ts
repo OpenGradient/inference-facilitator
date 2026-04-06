@@ -401,7 +401,13 @@ app.get("/supported", async (_req, res) => {
 });
 
 app.get("/health", (_req, res) => {
-  res.json({ status: "ok" });
+  const supported = facilitator.getSupported();
+  res.json({
+    status: "ok",
+    supportedKinds: supported.kinds,
+    extensions: supported.extensions,
+    signers: supported.signers,
+  });
 });
 
 let httpServer: Server | null = null;
@@ -441,8 +447,10 @@ process.on("SIGTERM", () => {
 });
 
 httpServer = app.listen(parseInt(PORT, 10), () => {
+  const supported = facilitator.getSupported();
   console.log(`🚀 All Networks API listening on http://localhost:${PORT}`);
-  console.log(`   Supported networks: ${facilitator.getSupported().kinds.map(k => k.network).join(", ")}`);
+  console.log(`   Supported networks: ${supported.kinds.map(k => k.network).join(", ")}`);
+  console.log(`   Supported extensions: ${supported.extensions.join(", ") || "(none)"}`);
   console.log(`   Payment queue: ${PAYMENT_QUEUE_NAME}`);
   console.log(`   Data settlement queue: ${DATA_SETTLEMENT_QUEUE_NAME}`);
   console.log();
