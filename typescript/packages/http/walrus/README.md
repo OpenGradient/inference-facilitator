@@ -1,17 +1,17 @@
-# @x402/walrus
+# og-fe-tee-verification
 
 A small frontend-friendly client for fetching Walrus blobs from the Sui Core aggregator.
 
 ## Installation
 
 ```bash
-pnpm install @x402/walrus
+pnpm install og-fe-tee-verification
 ```
 
 ## Quick Start
 
 ```ts
-import { fetchWalrusBlobText } from "@x402/walrus";
+import { fetchWalrusBlobText } from "og-fe-tee-verification";
 
 const blobText = await fetchWalrusBlobText("your-walrus-blob-id");
 console.log(blobText);
@@ -72,7 +72,7 @@ Creates a reusable client with a shared base URL and fetch implementation.
 ## Example
 
 ```ts
-import { createWalrusClient } from "@x402/walrus";
+import { createWalrusClient } from "og-fe-settlement-verify";
 
 const walrus = createWalrusClient({
   baseUrl: "https://aggregator.suicore.com",

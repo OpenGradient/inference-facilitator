@@ -1,6 +1,6 @@
 {
-  "name": "@x402/walrus",
-  "version": "2.3.0",
+  "name": "og-fe-tee-verification",
+  "version": "0.0.1",
   "main": "./dist/cjs/index.js",
   "module": "./dist/esm/index.js",
   "types": "./dist/index.d.ts",
@@ -22,9 +22,9 @@
     "frontend"
   ],
   "license": "Apache-2.0",
-  "author": "Coinbase Inc.",
-  "repository": "https://github.com/coinbase/x402",
-  "description": "Frontend-friendly Walrus blob client for the Sui Core aggregator",
+  "author": "OpenGradient",
+  "repository": "https://github.com/OpenGradient/inference-facilitator",
+  "description": "Frontend-friendly Walrus blob client for the Sui Core aggregator and Tee verification for OpenGradient",
   "devDependencies": {
     "@eslint/js": "^9.24.0",
     "@types/node": "^22.13.4",

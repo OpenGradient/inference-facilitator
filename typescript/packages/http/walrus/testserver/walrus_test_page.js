@@ -6,7 +6,7 @@ import {
   encodeWalrusSignature,
   verifyWalrusBatchTreeItemSignature,
   verifyWalrusBatchTreeSignatures,
-} from "@x402/walrus";
+} from "og-fe-tee-verification";
 
 const state = {
   loadedTree: null,

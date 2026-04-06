@@ -15,7 +15,7 @@ import {
   verifyWalrusBatchTreeItemSignature,
 } from "./index";
 
-describe("@x402/walrus", () => {
+describe("og-fe-tee-verification", () => {
   let mockFetch: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {

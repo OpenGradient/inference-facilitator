@@ -1,4 +1,4 @@
-# @x402/walrus
+# og-fe-tee-verification
 
 ## 2.3.0
 
