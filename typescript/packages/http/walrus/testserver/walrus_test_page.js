@@ -91,7 +91,7 @@ async function onFetchBlob() {
 }
 
 async function onVerifyItem() {
-  setStatus("Calling verifySignature(...) for the current form values...", "success");
+  setStatus("Calling verifySignatureNoTimestamp(...) for the current form values...", "success");
   setButtonState(true);
 
   try {
@@ -125,7 +125,7 @@ async function onVerifyItem() {
     );
 
     setStatus(
-      `verifySignature(...) completed for the current item.\nResult: ${verified ? "valid" : "invalid"}`,
+      `verifySignatureNoTimestamp(...) completed for the current item.\nResult: ${verified ? "valid" : "invalid"}`,
       verified ? "success" : "error",
     );
   } catch (error) {
@@ -136,7 +136,7 @@ async function onVerifyItem() {
 }
 
 async function onVerifyBlob() {
-  setStatus("Calling verifySignature(...) for every item in the loaded blob...", "success");
+  setStatus("Calling verifySignatureNoTimestamp(...) for every item in the loaded blob...", "success");
   setButtonState(true);
 
   try {

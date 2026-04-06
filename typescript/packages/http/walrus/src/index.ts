@@ -3,7 +3,7 @@ import { toHex, type Hex } from "viem";
 
 export const DEFAULT_WALRUS_AGGREGATOR_URL = "https://aggregator.suicore.com";
 export const DEFAULT_WALRUS_VERIFIER_CONTRACT_ADDRESS =
-  "0xFC4aCC078AD611081d82784C985F1c979A7aEC20" as Hex;
+  "0xa06dAFA3D713b74e4e1E74B34bd1588C9FD6C290" as Hex;
 export const DEFAULT_WALRUS_RPC_URL = "https://ogevmdevnet.opengradient.ai";
 
 export const WALRUS_BATCH_LEAF_ENCODING = [
@@ -17,7 +17,7 @@ export const WALRUS_BATCH_LEAF_ENCODING = [
 const verifierContractAbi = [
   {
     type: "function",
-    name: "verifySignature",
+    name: "verifySignatureNoTimestamp",
     stateMutability: "view",
     inputs: [
       {
@@ -111,7 +111,7 @@ export type WalrusSignatureVerificationClient = {
   readContract(args: {
     address: Hex;
     abi: typeof verifierContractAbi;
-    functionName: "verifySignature";
+    functionName: "verifySignatureNoTimestamp";
     args: readonly [Hex, Hex, Hex, bigint, Hex];
   }): Promise<boolean>;
 };
@@ -322,7 +322,7 @@ export function parseWalrusBatchTree(
 }
 
 /**
- * Encodes a raw tee signature into bytes calldata for the onchain verifySignature call.
+ * Encodes a raw tee signature into bytes calldata for the onchain verifySignatureNoTimestamp call.
  *
  * @param signature - Raw signature value.
  * @param encoding - Signature encoding strategy.
@@ -346,10 +346,10 @@ export function encodeWalrusSignature(
 }
 
 /**
- * Calls verifySignature for a single Walrus batch item.
+ * Calls verifySignatureNoTimestamp for a single Walrus batch item.
  *
  * @param args - Verification inputs for one batch item.
- * @returns Whether the onchain verifySignature call returned true.
+ * @returns Whether the onchain verifySignatureNoTimestamp call returned true.
  */
 export async function verifyWalrusBatchTreeItemSignature(
   args: VerifyWalrusBatchTreeItemSignatureArgs,
@@ -357,7 +357,7 @@ export async function verifyWalrusBatchTreeItemSignature(
   return args.publicClient.readContract({
     address: resolveVerifierContractAddress(args),
     abi: verifierContractAbi,
-    functionName: "verifySignature",
+    functionName: "verifySignatureNoTimestamp",
     args: [
       args.item.tee_id,
       args.item.input_hash,
@@ -369,7 +369,7 @@ export async function verifyWalrusBatchTreeItemSignature(
 }
 
 /**
- * Calls verifySignature for every item in a Walrus batch tree.
+ * Calls verifySignatureNoTimestamp for every item in a Walrus batch tree.
  *
  * @param args - Verification inputs for the whole Walrus batch tree.
  * @returns Per-item verification results.
@@ -390,7 +390,7 @@ export async function verifyWalrusBatchTreeSignatures(
         const verified = await args.publicClient.readContract({
           address: resolveVerifierContractAddress(args),
           abi: verifierContractAbi,
-          functionName: "verifySignature",
+          functionName: "verifySignatureNoTimestamp",
           args: [
             item.tee_id,
             item.input_hash,

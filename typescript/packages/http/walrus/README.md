@@ -46,7 +46,7 @@ Fetches a batch Merkle tree blob and returns the decoded items for UI use.
 ### `DEFAULT_WALRUS_VERIFIER_CONTRACT_ADDRESS`
 
 The default verifier contract address:
-`0xFC4aCC078AD611081d82784C985F1c979A7aEC20`
+`0xa06dAFA3D713b74e4e1E74B34bd1588C9FD6C290`
 
 ### `DEFAULT_WALRUS_RPC_URL`
 
@@ -55,13 +55,13 @@ The default RPC URL:
 
 ### `verifyWalrusBatchTreeItemSignature(args)`
 
-Calls `verifySignature(teeId, inputHash, outputHash, timestamp, signature)` for a single batch
-item. `args.verifierContractAddress` is optional and defaults to
+Calls `verifySignatureNoTimestamp(teeId, inputHash, outputHash, timestamp, signature)` for a
+single batch item. `args.verifierContractAddress` is optional and defaults to
 `DEFAULT_WALRUS_VERIFIER_CONTRACT_ADDRESS`.
 
 ### `verifyWalrusBatchTreeSignatures(args)`
 
-Runs `verifySignature(...)` for every item in a fetched Walrus batch tree.
+Runs `verifySignatureNoTimestamp(...)` for every item in a fetched Walrus batch tree.
 `args.verifierContractAddress` is optional and defaults to
 `DEFAULT_WALRUS_VERIFIER_CONTRACT_ADDRESS`.
 
@@ -84,13 +84,14 @@ const imageBytes = await walrus.fetchBlobBytes("your-walrus-blob-id");
 ## Batch Tree Notes
 
 - The current facilitator batch tree stores raw `tee_signature` bytes in each leaf.
-- That means the UI can call onchain `verifySignature(...)` directly for every item in the blob.
+- That means the UI can call onchain `verifySignatureNoTimestamp(...)` directly for every item in
+  the blob.
 - The current batch leaf order is `tee_id, input_hash, output_hash, tee_signature, tee_timestamp`.
 
 ## Notes
 
 - The default aggregator is `https://aggregator.suicore.com`.
-- The default verifier contract is `0xFC4aCC078AD611081d82784C985F1c979A7aEC20`.
+- The default verifier contract is `0xa06dAFA3D713b74e4e1E74B34bd1588C9FD6C290`.
 - The default RPC URL is `https://ogevmdevnet.opengradient.ai`.
 - Walrus aggregators return the raw blob bytes from `GET /v1/blobs/<blob-id>`.
 - Blob IDs are URL-encoded before the request is made.

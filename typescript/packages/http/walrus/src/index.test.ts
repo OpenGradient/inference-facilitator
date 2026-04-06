@@ -142,7 +142,7 @@ describe("@x402/walrus", () => {
     expect(encodeWalrusSignature("SGVsbG8=", "base64")).toBe("0x48656c6c6f");
   });
 
-  it("calls verifySignature with the decoded item fields", async () => {
+  it("calls verifySignatureNoTimestamp with the decoded item fields", async () => {
     const publicClient = {
       readContract: vi.fn().mockResolvedValue(true),
     };
@@ -173,7 +173,7 @@ describe("@x402/walrus", () => {
     expect(publicClient.readContract).toHaveBeenCalledWith({
       address: "0x4444444444444444444444444444444444444444",
       abi: expect.any(Array),
-      functionName: "verifySignature",
+      functionName: "verifySignatureNoTimestamp",
       args: [
         item.tee_id,
         item.input_hash,
