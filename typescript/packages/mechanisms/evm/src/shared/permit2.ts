@@ -65,6 +65,14 @@ export type Permit2ProxyConfig = {
   proxyABI: readonly Record<string, unknown>[];
 };
 
+export type Permit2SimulationResult =
+  | { ok: true }
+  | {
+      ok: false;
+      error: unknown;
+      errorMessage?: string;
+    };
+
 /**
  * Checks Permit2 allowance and validates gas sponsoring extensions if allowance is insufficient.
  *
@@ -302,7 +310,7 @@ export async function simulatePermit2Settle(
   config: Permit2ProxyConfig,
   signer: FacilitatorEvmSigner,
   settleArgs: readonly unknown[],
-): Promise<boolean> {
+): Promise<Permit2SimulationResult> {
   try {
     await signer.readContract({
       address: config.proxyAddress,
@@ -310,9 +318,13 @@ export async function simulatePermit2Settle(
       functionName: "settle",
       args: settleArgs,
     });
-    return true;
-  } catch {
-    return false;
+    return { ok: true };
+  } catch (error) {
+    return {
+      ok: false,
+      error,
+      errorMessage: extractSimulationErrorMessage(error),
+    };
   }
 }
 
@@ -332,7 +344,7 @@ export async function simulatePermit2SettleWithPermit(
   signer: FacilitatorEvmSigner,
   settleArgs: readonly unknown[],
   eip2612Info: Eip2612GasSponsoringInfo,
-): Promise<boolean> {
+): Promise<Permit2SimulationResult> {
   try {
     const { v, r, s } = splitEip2612Signature(eip2612Info.signature);
 
@@ -351,9 +363,13 @@ export async function simulatePermit2SettleWithPermit(
         ...settleArgs,
       ],
     });
-    return true;
-  } catch {
-    return false;
+    return { ok: true };
+  } catch (error) {
+    return {
+      ok: false,
+      error,
+      errorMessage: extractSimulationErrorMessage(error),
+    };
   }
 }
 
@@ -373,9 +389,9 @@ export async function simulatePermit2SettleWithErc20Approval(
   extensionSigner: Erc20ApprovalGasSponsoringSigner,
   settleArgs: readonly unknown[],
   erc20Info: { signedTransaction: string },
-): Promise<boolean> {
+): Promise<Permit2SimulationResult> {
   if (!extensionSigner.simulateTransactions) {
-    return false;
+    return { ok: false, error: new Error("simulateTransactions unavailable") };
   }
 
   try {
@@ -385,12 +401,17 @@ export async function simulatePermit2SettleWithErc20Approval(
       args: settleArgs,
     });
 
-    return await extensionSigner.simulateTransactions([
+    const ok = await extensionSigner.simulateTransactions([
       erc20Info.signedTransaction as `0x${string}`,
       { to: config.proxyAddress, data: settleData, gas: BigInt(300_000) },
     ]);
-  } catch {
-    return false;
+    return ok ? { ok: true } : { ok: false, error: new Error("bundle simulation failed") };
+  } catch (error) {
+    return {
+      ok: false,
+      error,
+      errorMessage: extractSimulationErrorMessage(error),
+    };
   }
 }
 
@@ -410,8 +431,19 @@ export async function diagnosePermit2SimulationFailure(
   tokenAddress: `0x${string}`,
   permit2Payload: Permit2PayloadBase,
   amountRequired: string,
+  simulationError?: unknown,
 ): Promise<VerifyResponse> {
   const payer = permit2Payload.permit2Authorization.from;
+  const mappedSimulationError = mapSimulationError(simulationError);
+
+  if (mappedSimulationError) {
+    return {
+      isValid: false,
+      invalidReason: mappedSimulationError.invalidReason,
+      invalidMessage: mappedSimulationError.invalidMessage,
+      payer,
+    };
+  }
 
   const diagnosticCalls: ContractCall[] = [
     {
@@ -460,6 +492,91 @@ export async function diagnosePermit2SimulationFailure(
   }
 
   return { isValid: false, invalidReason: ErrPermit2SimulationFailed, payer };
+}
+
+function extractSimulationErrorMessage(error: unknown): string | undefined {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  return undefined;
+}
+
+function mapSimulationError(
+  error: unknown,
+): Pick<VerifyResponse, "invalidReason" | "invalidMessage"> | null {
+  const message = extractSimulationErrorMessage(error);
+  if (!message) {
+    return null;
+  }
+
+  if (message.includes("Permit2612AmountMismatch")) {
+    return {
+      invalidReason: ErrPermit2612AmountMismatch,
+      invalidMessage: message,
+    };
+  }
+  if (message.includes("InvalidAmount")) {
+    return {
+      invalidReason: ErrPermit2InvalidAmount,
+      invalidMessage: message,
+    };
+  }
+  if (message.includes("InvalidDestination")) {
+    return {
+      invalidReason: ErrPermit2InvalidDestination,
+      invalidMessage: message,
+    };
+  }
+  if (message.includes("InvalidOwner")) {
+    return {
+      invalidReason: ErrPermit2InvalidOwner,
+      invalidMessage: message,
+    };
+  }
+  if (message.includes("PaymentTooEarly")) {
+    return {
+      invalidReason: ErrPermit2PaymentTooEarly,
+      invalidMessage: message,
+    };
+  }
+  if (message.includes("InvalidSignature") || message.includes("SignatureExpired")) {
+    return {
+      invalidReason: ErrPermit2InvalidSignature,
+      invalidMessage: message,
+    };
+  }
+  if (message.includes("InvalidNonce")) {
+    return {
+      invalidReason: ErrPermit2InvalidNonce,
+      invalidMessage: message,
+    };
+  }
+  if (message.includes("AmountExceedsPermitted")) {
+    return {
+      invalidReason: ErrUptoAmountExceedsPermitted,
+      invalidMessage: message,
+    };
+  }
+  if (message.includes("UnauthorizedFacilitator")) {
+    return {
+      invalidReason: ErrUptoUnauthorizedFacilitator,
+      invalidMessage: message,
+    };
+  }
+  if (message.includes("permit")) {
+    return {
+      invalidReason: ErrPermit2SimulationFailed,
+      invalidMessage: message,
+    };
+  }
+
+  return {
+    invalidReason: ErrPermit2SimulationFailed,
+    invalidMessage: message,
+  };
 }
 
 /**

@@ -21,6 +21,15 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
+import {
+  debugLog,
+  summarizeDataSettlementJob,
+  summarizeError,
+  summarizePaymentPayload,
+  summarizePaymentRequirements,
+  summarizeSettleResponse,
+  summarizeVerifyResponse,
+} from "./logging.js";
 import { gaugeMetric, histogramMetric, incrementMetric } from "./metrics.js";
 import {
   BASE_SEPOLIA_NETWORK,
@@ -396,7 +405,7 @@ export async function uploadToWalrus(
   const publisherUrl = process.env.WALRUS_PUBLISHER_URL || "http://localhost:9002/v1/blobs";
   const url = `${publisherUrl}?epochs=10`;
   const walrusUploadTimeoutMs = Number(process.env.WALRUS_UPLOAD_TIMEOUT_MS || 30_000);
-  console.log(`Uploading individual settlement payload to Walrus: ${publisherUrl}`);
+  console.log(`[settlement] Uploading ${uploadKind} to Walrus via ${publisherUrl}`);
 
   const abortController = new AbortController();
   const timeout = setTimeout(() => abortController.abort(), walrusUploadTimeoutMs);
@@ -438,7 +447,7 @@ export async function uploadToWalrus(
   }
 
   if (result.alreadyCertified?.blobId) {
-    console.log("Blob already exists on Walrus (deduplicated).");
+    console.log(`[settlement] ${uploadKind} already exists on Walrus (deduplicated).`);
     return result.alreadyCertified.blobId;
   }
 
@@ -460,8 +469,9 @@ export async function processBatchSettlement(
     chainId: context.chainId,
     chainName: context.chainName,
     bufferedItems: batchSettlementBuffer.length,
-    data,
+    ...summarizeDataSettlementJob({ settlementType: "batch", data }),
   });
+  debugLog("[settlement][debug] Raw batch settlement data", data);
 
   scheduleBatchFlush(context);
 
@@ -513,8 +523,10 @@ export async function processIndividualSettlement(
       chainName: context.chainName,
       walrusBlobId: blobId,
       txHash,
-      data,
+      ...summarizeDataSettlementJob({ settlementType: "individual", data }),
     });
+    debugLog("[settlement][debug] Raw individual settlement data", data);
+    debugLog("[settlement][debug] Walrus payload", walrusPayload);
 
     console.log(
       `[settlement] Individual settlement uploaded to Walrus with blob id: ${blobId}, txHash: ${txHash}`,
@@ -533,8 +545,8 @@ export async function processIndividualSettlement(
       chainId: context.chainId,
       chainName: context.chainName,
       settlementContractAddress: context.settlementContractAddress,
-      data,
-      error,
+      ...summarizeDataSettlementJob({ settlementType: "individual", data }),
+      ...summarizeError(error),
     });
     throw error;
   }
@@ -834,22 +846,51 @@ export async function createFacilitator(): Promise<x402Facilitator> {
 
   const facilitator = new x402Facilitator()
     .onBeforeVerify(async context => {
-      console.log("Before verify", context);
+      console.log("[verify] Starting payment verification", {
+        ...summarizePaymentRequirements(context.requirements),
+        ...summarizePaymentPayload(context.paymentPayload),
+      });
+      debugLog("[verify][debug] Full verify context", context);
     })
     .onAfterVerify(async context => {
-      console.log("After verify", context);
+      console.log("[verify] Payment verification completed", {
+        ...summarizePaymentRequirements(context.requirements),
+        ...summarizeVerifyResponse(context.result),
+      });
+      debugLog("[verify][debug] Verify result context", context);
     })
     .onVerifyFailure(async context => {
-      console.log("Verify failure", context);
+      console.warn("[verify] Payment verification failed", {
+        ...summarizePaymentRequirements(context.requirements),
+        ...summarizePaymentPayload(context.paymentPayload),
+        ...summarizeError(context.error),
+      });
+      debugLog("[verify][debug] Verify failure context", context);
     })
     .onBeforeSettle(async context => {
-      console.log("Before settle", context);
+      console.log("[payment-settlement] Starting payment settlement", {
+        ...summarizePaymentRequirements(context.requirements),
+        ...summarizePaymentPayload(context.paymentPayload),
+      });
+      debugLog("[payment-settlement][debug] Full settle context", context);
     })
     .onAfterSettle(async context => {
-      console.log("After settle", context);
+      const settlementSummary = {
+        ...summarizePaymentRequirements(context.requirements),
+        ...summarizeSettleResponse(context.result),
+        ...(context.result.success ? {} : summarizePaymentPayload(context.paymentPayload)),
+      };
+
+      console.log("[payment-settlement] Payment settlement completed", settlementSummary);
+      debugLog("[payment-settlement][debug] Settle result context", context);
     })
     .onSettleFailure(async context => {
-      console.log("Settle failure", context);
+      console.error("[payment-settlement] Payment settlement failed", {
+        ...summarizePaymentRequirements(context.requirements),
+        ...summarizePaymentPayload(context.paymentPayload),
+        ...summarizeError(context.error),
+      });
+      debugLog("[payment-settlement][debug] Settle failure context", context);
     });
 
   if (evmPrivateKey) {
@@ -975,19 +1016,13 @@ export async function createFacilitator(): Promise<x402Facilitator> {
       OG_EVM_NETWORK,
       new ExactEvmScheme(evmSigner, { deployERC4337WithEIP6492: true }),
     );
-    facilitator.register(
-      OG_EVM_NETWORK,
-      new UptoEvmScheme(evmSigner),
-    );
+    facilitator.register(OG_EVM_NETWORK, new UptoEvmScheme(evmSigner));
 
     facilitator.register(
       BASE_SEPOLIA_NETWORK,
       new ExactEvmScheme(baseEvmSigner, { deployERC4337WithEIP6492: true }),
     );
-    facilitator.register(
-      BASE_SEPOLIA_NETWORK,
-      new UptoEvmScheme(baseEvmSigner),
-    );
+    facilitator.register(BASE_SEPOLIA_NETWORK, new UptoEvmScheme(baseEvmSigner));
 
     facilitator
       .registerExtension(EIP2612_GAS_SPONSORING)

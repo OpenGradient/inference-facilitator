@@ -229,19 +229,20 @@ export async function verifyPermit2(
     }
 
     const exactSettleArgs = buildExactPermit2SettleArgs(permit2Payload);
-    const simOk = await simulatePermit2SettleWithPermit(
+    const simulation = await simulatePermit2SettleWithPermit(
       exactProxyConfig,
       signer,
       exactSettleArgs,
       eip2612Info,
     );
-    if (!simOk) {
+    if (!simulation.ok) {
       return diagnosePermit2SimulationFailure(
         exactProxyConfig,
         signer,
         tokenAddress,
         permit2Payload,
         requirements.amount,
+        simulation.error,
       );
     }
 
@@ -267,19 +268,20 @@ export async function verifyPermit2(
       );
 
       if (extensionSigner?.simulateTransactions) {
-        const simOk = await simulatePermit2SettleWithErc20Approval(
+        const simulation = await simulatePermit2SettleWithErc20Approval(
           exactProxyConfig,
           extensionSigner,
           buildExactPermit2SettleArgs(permit2Payload),
           erc20Info,
         );
-        if (!simOk) {
+        if (!simulation.ok) {
           return diagnosePermit2SimulationFailure(
             exactProxyConfig,
             signer,
             tokenAddress,
             permit2Payload,
             requirements.amount,
+            simulation.error,
           );
         }
         return { isValid: true, invalidReason: undefined, payer };
@@ -297,18 +299,19 @@ export async function verifyPermit2(
   }
 
   // Branch: standard settle (allowance already on-chain)
-  const simOk = await simulatePermit2Settle(
+  const simulation = await simulatePermit2Settle(
     exactProxyConfig,
     signer,
     buildExactPermit2SettleArgs(permit2Payload),
   );
-  if (!simOk) {
+  if (!simulation.ok) {
     return diagnosePermit2SimulationFailure(
       exactProxyConfig,
       signer,
       tokenAddress,
       permit2Payload,
       requirements.amount,
+      simulation.error,
     );
   }
 
@@ -349,6 +352,7 @@ export async function settlePermit2(
       network: payload.accepted.network,
       transaction: "",
       errorReason: valid.invalidReason ?? Errors.ErrInvalidScheme,
+      errorMessage: valid.invalidMessage,
       payer,
     };
   }

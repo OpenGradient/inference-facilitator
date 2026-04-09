@@ -249,19 +249,20 @@ export async function verifyUptoPermit2(
       return { isValid: false, invalidReason: fieldResult.invalidReason!, payer };
     }
 
-    const simOk = await simulatePermit2SettleWithPermit(
+    const simulation = await simulatePermit2SettleWithPermit(
       uptoProxyConfig,
       signer,
       uptoSettleArgs,
       eip2612InfoForSim,
     );
-    if (!simOk) {
+    if (!simulation.ok) {
       return diagnosePermit2SimulationFailure(
         uptoProxyConfig,
         signer,
         tokenAddress,
         permit2Payload,
         requirements.amount,
+        simulation.error,
       );
     }
 
@@ -286,19 +287,20 @@ export async function verifyUptoPermit2(
       );
 
       if (extensionSigner?.simulateTransactions) {
-        const simOk = await simulatePermit2SettleWithErc20Approval(
+        const simulation = await simulatePermit2SettleWithErc20Approval(
           uptoProxyConfig,
           extensionSigner,
           uptoSettleArgs,
           erc20Info,
         );
-        if (!simOk) {
+        if (!simulation.ok) {
           return diagnosePermit2SimulationFailure(
             uptoProxyConfig,
             signer,
             tokenAddress,
             permit2Payload,
             requirements.amount,
+            simulation.error,
           );
         }
         return { isValid: true, invalidReason: undefined, payer };
@@ -314,14 +316,15 @@ export async function verifyUptoPermit2(
     }
   }
 
-  const simOk = await simulatePermit2Settle(uptoProxyConfig, signer, uptoSettleArgs);
-  if (!simOk) {
+  const simulation = await simulatePermit2Settle(uptoProxyConfig, signer, uptoSettleArgs);
+  if (!simulation.ok) {
     return diagnosePermit2SimulationFailure(
       uptoProxyConfig,
       signer,
       tokenAddress,
       permit2Payload,
       requirements.amount,
+      simulation.error,
     );
   }
 
@@ -383,6 +386,7 @@ export async function settleUptoPermit2(
       network: payload.accepted.network,
       transaction: "",
       errorReason: valid.invalidReason ?? "invalid_scheme",
+      errorMessage: valid.invalidMessage,
       payer,
     };
   }
