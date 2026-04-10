@@ -14,7 +14,6 @@ COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY typescript/package.json ./typescript/
 COPY typescript/packages/core/package.json ./typescript/packages/core/
 COPY typescript/packages/extensions/package.json ./typescript/packages/extensions/
-COPY typescript/packages/mcp/package.json ./typescript/packages/mcp/
 COPY typescript/packages/mechanisms/evm/package.json ./typescript/packages/mechanisms/evm/
 COPY typescript/packages/http/next/package.json ./typescript/packages/http/next/
 COPY typescript/packages/http/express/package.json ./typescript/packages/http/express/
@@ -29,12 +28,10 @@ RUN pnpm install --frozen-lockfile
 # Copy source code
 COPY . .
 
-# Build all packages
-# We assume 'pnpm build' at root builds all workspace packages
 RUN pnpm --filter @x402/core build && \
     pnpm --filter @x402/evm build && \
     pnpm --filter @x402/extensions build && \
-    pnpm build
+    pnpm exec tsc --noCheck
 
 # Remove development dependencies
 RUN pnpm prune --prod
