@@ -20,7 +20,7 @@ import {
   toHex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { base, baseSepolia } from "viem/chains";
+import { base } from "viem/chains";
 import {
   debugLog,
   summarizeDataSettlementJob,
@@ -33,7 +33,6 @@ import {
 import { gaugeMetric, histogramMetric, incrementMetric } from "./metrics.js";
 import {
   BASE_MAINNET_NETWORK,
-  BASE_SEPOLIA_NETWORK,
   base64ToBytesCalldata,
   DATA_SETTLEMENT_BATCH_BUFFER_SIZE,
   DATA_SETTLEMENT_BATCH_IDLE_TIMEOUT_MS,
@@ -910,12 +909,6 @@ export async function createFacilitator(): Promise<x402Facilitator> {
       transport: http(),
     }).extend(publicActions);
 
-    const baseSepoliaViemClient = createWalletClient({
-      account: evmAccount,
-      chain: baseSepolia,
-      transport: http(),
-    }).extend(publicActions);
-
     const evmSigner = toFacilitatorEvmSigner({
       getCode: (args: { address: `0x${string}` }) => viemClient.getCode(args),
       address: evmAccount.address,
@@ -1002,49 +995,6 @@ export async function createFacilitator(): Promise<x402Facilitator> {
         baseViemClient.waitForTransactionReceipt(args),
     });
 
-    const baseSepoliaEvmSigner = toFacilitatorEvmSigner({
-      getCode: (args: { address: `0x${string}` }) => baseSepoliaViemClient.getCode(args),
-      address: evmAccount.address,
-      readContract: (args: {
-        address: `0x${string}`;
-        abi: readonly unknown[];
-        functionName: string;
-        args?: readonly unknown[];
-      }) =>
-        baseSepoliaViemClient.readContract({
-          ...args,
-          args: args.args || [],
-        }),
-      verifyTypedData: (args: {
-        address: `0x${string}`;
-        domain: Record<string, unknown>;
-        types: Record<string, unknown>;
-        primaryType: string;
-        message: Record<string, unknown>;
-        signature: `0x${string}`;
-      }) => baseSepoliaViemClient.verifyTypedData(args as never),
-      writeContract: (args: {
-        address: `0x${string}`;
-        abi: readonly unknown[];
-        functionName: string;
-        args: readonly unknown[];
-      }) =>
-        baseSepoliaViemClient.writeContract({
-          ...args,
-          args: args.args || [],
-          gas: 5_000_000n,
-          maxFeePerGas: parseGwei("0.006"),
-          maxPriorityFeePerGas: parseGwei("0.005"),
-        }),
-      sendTransaction: (args: { to: `0x${string}`; data: `0x${string}` }) =>
-        baseSepoliaViemClient.sendTransaction({
-          ...args,
-          gas: 5_000_000n,
-        }),
-      waitForTransactionReceipt: (args: { hash: `0x${string}` }) =>
-        baseSepoliaViemClient.waitForTransactionReceipt(args),
-    });
-
     const erc20ApprovalSigners = new Map<string, Erc20ApprovalGasSponsoringSigner>([
       [
         OG_EVM_NETWORK,
@@ -1060,13 +1010,6 @@ export async function createFacilitator(): Promise<x402Facilitator> {
           walletClient: baseViemClient,
         }),
       ],
-      [
-        BASE_SEPOLIA_NETWORK,
-        createErc20ApprovalGasSponsorSigner({
-          signer: baseSepoliaEvmSigner,
-          walletClient: baseSepoliaViemClient,
-        }),
-      ],
     ]);
 
     facilitator.register(
@@ -1080,12 +1023,6 @@ export async function createFacilitator(): Promise<x402Facilitator> {
       new ExactEvmScheme(baseEvmSigner, { deployERC4337WithEIP6492: true }),
     );
     facilitator.register(BASE_MAINNET_NETWORK, new UptoEvmScheme(baseEvmSigner));
-
-    facilitator.register(
-      BASE_SEPOLIA_NETWORK,
-      new ExactEvmScheme(baseSepoliaEvmSigner, { deployERC4337WithEIP6492: true }),
-    );
-    facilitator.register(BASE_SEPOLIA_NETWORK, new UptoEvmScheme(baseSepoliaEvmSigner));
 
     facilitator
       .registerExtension(EIP2612_GAS_SPONSORING)
