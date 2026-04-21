@@ -84,6 +84,7 @@ const DATA_WORKER_SETTLEMENT_GAS_LIMIT = BigInt(
 const DATA_WORKER_TX_RECEIPT_TIMEOUT_MS = Number(
   process.env.DATA_WORKER_TX_RECEIPT_TIMEOUT_MS || 120_000,
 );
+const BASE_MAINNET_RPC_URL = process.env.BASE_MAINNET_RPC_URL;
 const HEARTBEAT_RELAY_GAS_LIMIT = BigInt(process.env.HEARTBEAT_RELAY_GAS_LIMIT || "500000");
 const HEARTBEAT_RELAY_TX_RECEIPT_TIMEOUT_MS = Number(
   process.env.HEARTBEAT_RELAY_TX_RECEIPT_TIMEOUT_MS || 120_000,
@@ -906,7 +907,7 @@ export async function createFacilitator(): Promise<x402Facilitator> {
     const baseViemClient = createWalletClient({
       account: evmAccount,
       chain: base,
-      transport: http(),
+      transport: http(BASE_MAINNET_RPC_URL),
     }).extend(publicActions);
 
     const evmSigner = toFacilitatorEvmSigner({
