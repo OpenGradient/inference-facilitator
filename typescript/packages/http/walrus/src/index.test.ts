@@ -9,10 +9,13 @@ import {
   fetchWalrusBlob,
   fetchWalrusBlobBytes,
   fetchWalrusBlobJson,
+  fetchWalrusIndividualSettlement,
   fetchWalrusBlobText,
   getWalrusBlobUrl,
   isWalrusBlobFetchError,
+  parseWalrusIndividualSettlement,
   verifyWalrusBatchTreeItemSignature,
+  verifyWalrusIndividualSettlementSignature,
 } from "./index";
 
 describe("og-fe-tee-verification", () => {
@@ -97,6 +100,42 @@ describe("og-fe-tee-verification", () => {
     await expect(
       fetchWalrusBlobJson<typeof payload>("blob-123", { fetch: mockFetch }),
     ).resolves.toEqual(payload);
+  });
+
+  it("fetches and parses an individual settlement blob", async () => {
+    const payload = {
+      input: { prompt: "hello" },
+      output: {
+        text: "world",
+        tee_signature: "SGVsbG8=",
+        tee_id: "0x1111111111111111111111111111111111111111111111111111111111111111",
+        tee_timestamp: "1741809483",
+        tee_request_hash: "2222222222222222222222222222222222222222222222222222222222222222",
+        tee_output_hash: "3333333333333333333333333333333333333333333333333333333333333333",
+      },
+      ethAddress: "0x4444444444444444444444444444444444444444",
+    };
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    await expect(fetchWalrusIndividualSettlement("blob-123", { fetch: mockFetch })).resolves.toMatchObject({
+      blobId: "blob-123",
+      input: payload.input,
+      output: payload.output,
+      tee_id: payload.output.tee_id,
+      tee_signature: payload.output.tee_signature,
+      tee_signature_bytes: "0x48656c6c6f",
+      tee_timestamp: payload.output.tee_timestamp,
+      eth_address: payload.ethAddress,
+      input_hash:
+        "0x2222222222222222222222222222222222222222222222222222222222222222",
+      output_hash:
+        "0x3333333333333333333333333333333333333333333333333333333333333333",
+    });
   });
 
   it("throws a typed error on non-ok responses", async () => {
@@ -216,5 +255,99 @@ describe("og-fe-tee-verification", () => {
         address: DEFAULT_WALRUS_VERIFIER_CONTRACT_ADDRESS,
       }),
     );
+  });
+
+  it("parses individual settlement payload aliases", () => {
+    expect(
+      parseWalrusIndividualSettlement("blob-123", {
+        input: { prompt: "hello" },
+        output: {
+          text: "world",
+          tee_request_hash: "2222222222222222222222222222222222222222222222222222222222222222",
+          tee_output_hash: "3333333333333333333333333333333333333333333333333333333333333333",
+        },
+        tee_signature: "SGVsbG8=",
+        tee_id: "0x1111111111111111111111111111111111111111111111111111111111111111",
+        tee_timestamp: "1741809483",
+        eth_address: "0x4444444444444444444444444444444444444444",
+      }),
+    ).toMatchObject({
+      blobId: "blob-123",
+      tee_id: "0x1111111111111111111111111111111111111111111111111111111111111111",
+      input_hash: "0x2222222222222222222222222222222222222222222222222222222222222222",
+      output_hash: "0x3333333333333333333333333333333333333333333333333333333333333333",
+      tee_signature: "SGVsbG8=",
+      tee_signature_bytes: "0x48656c6c6f",
+      tee_timestamp: "1741809483",
+      eth_address: "0x4444444444444444444444444444444444444444",
+    });
+  });
+
+  it("verifies individual settlements using blob-provided hashes", async () => {
+    const publicClient = {
+      readContract: vi.fn().mockResolvedValue(true),
+    };
+    const settlement = parseWalrusIndividualSettlement("blob-123", {
+      input: { prompt: "hello" },
+      output: {
+        text: "world",
+        tee_signature: "SGVsbG8=",
+        tee_id: "0x1111111111111111111111111111111111111111111111111111111111111111",
+        tee_timestamp: "1741809483",
+        tee_request_hash: "2222222222222222222222222222222222222222222222222222222222222222",
+        tee_output_hash: "3333333333333333333333333333333333333333333333333333333333333333",
+      },
+      ethAddress: "0x4444444444444444444444444444444444444444",
+    });
+
+    await expect(
+      verifyWalrusIndividualSettlementSignature({
+        settlement,
+        publicClient,
+      }),
+    ).resolves.toBe(true);
+
+    expect(publicClient.readContract).toHaveBeenCalledWith({
+      address: DEFAULT_WALRUS_VERIFIER_CONTRACT_ADDRESS,
+      abi: expect.any(Array),
+      functionName: "verifySignatureNoTimestamp",
+      args: [
+        settlement.tee_id,
+        settlement.input_hash,
+        settlement.output_hash,
+        1741809483n,
+        "0x48656c6c6f",
+      ],
+    });
+  });
+
+  it("requires explicit hashes for older individual blobs that do not include them", async () => {
+    const publicClient = {
+      readContract: vi.fn().mockResolvedValue(true),
+    };
+    const settlement = parseWalrusIndividualSettlement("blob-123", {
+      input: { prompt: "hello" },
+      output: { text: "world" },
+      teeSignature: "SGVsbG8=",
+      teeId: "0x1111111111111111111111111111111111111111111111111111111111111111",
+      timestamp: "1741809483",
+      ethAddress: "0x4444444444444444444444444444444444444444",
+    });
+
+    await expect(
+      verifyWalrusIndividualSettlementSignature({
+        settlement,
+        publicClient,
+      }),
+    ).rejects.toThrow("inputHash is required for individual settlement verification.");
+
+    await expect(
+      verifyWalrusIndividualSettlementSignature({
+        settlement,
+        inputHash: "0x2222222222222222222222222222222222222222222222222222222222222222",
+        outputHash: "0x3333333333333333333333333333333333333333333333333333333333333333",
+        publicClient,
+      }),
+    ).resolves.toBe(true);
   });
 });

@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Walrus Batch Verifier</title>
+    <title>Walrus Settlement Verifier</title>
     <script type="importmap">
       {
         "imports": {
@@ -229,6 +229,10 @@
         color: var(--accent);
       }
 
+      .hidden {
+        display: none;
+      }
+
       .stack {
         display: grid;
         gap: 18px;
@@ -329,10 +333,11 @@
     <main>
       <section class="hero">
         <p class="eyebrow">Walrus + TEE Signature Verify</p>
-        <h1>Batch Blob Test Page</h1>
+        <h1>Settlement Blob Test Page</h1>
         <p class="subcopy">
           This page imports the built local package from <code>/dist/esm/index.mjs</code>, fetches
-          a Walrus batch blob, shows every decoded item, and can run the verifier contract&apos;s
+          either a Walrus batch settlement blob or an individual settlement blob, shows the decoded
+          payload, displays the individual outcome, and can run the verifier contract&apos;s
           <code>verifySignatureNoTimestamp(...)</code> call from the browser.
         </p>
       </section>
@@ -341,16 +346,23 @@
         <section class="panel">
           <h2>Inputs</h2>
           <p class="hint">
-            Paste a blob ID first. You can use either the plain Walrus ID or a hex-encoded
-            <code>0x...</code> version of that ID. After the blob loads, click any row to populate
-            the form with <code>tee_id</code>, <code>input_hash</code>, <code>output_hash</code>,
-            <code>tee_signature</code>, and <code>tee_timestamp</code> for direct signature
-            verification.
+            Pick the settlement type first, then paste a blob ID. You can use either the plain
+            Walrus ID or a hex-encoded <code>0x...</code> version. After the blob loads, use the
+            decoded payload to populate the verification form and inspect the outcome data for
+            individual settlements.
           </p>
 
           <div class="field">
             <label for="aggregatorUrl">Aggregator URL</label>
             <input id="aggregatorUrl" value="https://aggregator.suicore.com" />
+          </div>
+
+          <div class="field">
+            <label for="settlementMode">Settlement Type</label>
+            <select id="settlementMode">
+              <option value="batch">batch</option>
+              <option value="individual">individual</option>
+            </select>
           </div>
 
           <div class="field">
@@ -377,7 +389,7 @@
             <label for="teeSignature">tee_signature</label>
             <textarea
               id="teeSignature"
-              placeholder="Paste raw tee_signature. If you load an item from the blob, this will be filled with the stored bytes hex."
+              placeholder="Paste raw tee_signature. Batch blobs usually fill this with bytes hex; individual blobs usually fill this with the stored signature string."
             ></textarea>
           </div>
 
@@ -405,13 +417,13 @@
             <label for="verifierContractAddress">Verifier Contract Address</label>
             <input
               id="verifierContractAddress"
-              value="0xa06dAFA3D713b74e4e1E74B34bd1588C9FD6C290"
+              value="0x626D71947f59E6574bDfAdA8eE48E4C96FF4203b"
             />
           </div>
 
           <div class="actions">
             <button id="fetchBlobButton" class="primary">Fetch Blob</button>
-            <button id="verifyItemButton" class="secondary">Verify Item</button>
+            <button id="verifyItemButton" class="secondary">Verify Current Payload</button>
             <button id="verifyBlobButton" class="ghost">Verify Full Blob</button>
           </div>
 
@@ -461,6 +473,11 @@
           <section class="panel">
             <h3 class="section-title">Selected Payload</h3>
             <pre id="selectedPayloadOutput">No item selected yet.</pre>
+          </section>
+
+          <section class="panel">
+            <h3 class="section-title">Outcome</h3>
+            <pre id="outcomeOutput">No individual settlement outcome loaded yet.</pre>
           </section>
 
           <section class="panel">

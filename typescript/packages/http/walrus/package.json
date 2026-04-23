@@ -1,6 +1,6 @@
 {
   "name": "og-fe-tee-verification",
-  "version": "0.0.1",
+  "version": "0.0.3",
   "main": "./dist/cjs/index.js",
   "module": "./dist/esm/index.js",
   "types": "./dist/index.d.ts",

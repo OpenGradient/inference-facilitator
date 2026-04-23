@@ -3,7 +3,7 @@ import { toHex, type Hex } from "viem";
 
 export const DEFAULT_WALRUS_AGGREGATOR_URL = "https://aggregator.suicore.com";
 export const DEFAULT_WALRUS_VERIFIER_CONTRACT_ADDRESS =
-  "0xa06dAFA3D713b74e4e1E74B34bd1588C9FD6C290" as Hex;
+  "0x626D71947f59E6574bDfAdA8eE48E4C96FF4203b" as Hex;
 export const DEFAULT_WALRUS_RPC_URL = "https://ogevmdevnet.opengradient.ai";
 
 export const WALRUS_BATCH_LEAF_ENCODING = [
@@ -105,6 +105,20 @@ export type LoadedWalrusBatchTree = {
   items: WalrusBatchTreeItem[];
 };
 
+export type LoadedWalrusIndividualSettlement = {
+  blobId: string;
+  input: unknown;
+  output: unknown;
+  tee_id: Hex;
+  input_hash?: Hex;
+  output_hash?: Hex;
+  tee_signature: string;
+  tee_signature_bytes: Hex;
+  tee_timestamp: string;
+  eth_address: Hex;
+  raw: Record<string, unknown>;
+};
+
 export type WalrusSignatureEncoding = "auto" | "hex" | "utf8" | "base64";
 
 export type WalrusSignatureVerificationClient = {
@@ -129,6 +143,15 @@ export type VerifyWalrusBatchTreeSignaturesArgs = {
   publicClient: WalrusSignatureVerificationClient;
   aggregatorUrl?: string;
   fetch?: typeof globalThis.fetch;
+};
+
+export type VerifyWalrusIndividualSettlementSignatureArgs = {
+  settlement: LoadedWalrusIndividualSettlement;
+  inputHash?: Hex;
+  outputHash?: Hex;
+  signatureEncoding?: WalrusSignatureEncoding;
+  verifierContractAddress?: Hex;
+  publicClient: WalrusSignatureVerificationClient;
 };
 
 export type WalrusBatchTreeItemVerification = {
@@ -286,6 +309,22 @@ export async function fetchWalrusBatchTree(
 }
 
 /**
+ * Fetches and parses a Walrus individual settlement blob.
+ *
+ * @param blobId - Walrus individual settlement blob ID.
+ * @param options - Optional request configuration.
+ * @returns The normalized settlement payload.
+ */
+export async function fetchWalrusIndividualSettlement(
+  blobId: string,
+  options: FetchWalrusBlobOptions = {},
+): Promise<LoadedWalrusIndividualSettlement> {
+  const normalizedBlobId = normalizeBlobId(blobId);
+  const payload = await fetchWalrusBlobJson<Record<string, unknown>>(normalizedBlobId, options);
+  return parseWalrusIndividualSettlement(normalizedBlobId, payload);
+}
+
+/**
  * Parses a Walrus batch Merkle tree payload into strongly typed items.
  *
  * @param blobId - Walrus batch blob ID.
@@ -322,6 +361,65 @@ export function parseWalrusBatchTree(
 }
 
 /**
+ * Parses an individual settlement payload uploaded to Walrus.
+ *
+ * @param blobId - Walrus individual settlement blob ID.
+ * @param payload - Raw JSON payload.
+ * @returns The normalized settlement payload.
+ */
+export function parseWalrusIndividualSettlement(
+  blobId: string,
+  payload: Record<string, unknown>,
+): LoadedWalrusIndividualSettlement {
+  if (!isRecord(payload)) {
+    throw new Error("Walrus individual settlement blob must be a JSON object.");
+  }
+
+  const output = getRequiredRecordValue(payload, ["output"]);
+  const outputRecord = isRecord(output) ? output : null;
+  const teeSignature = getRequiredSettlementString(payload, outputRecord, [
+    "teeSignature",
+    "tee_signature",
+  ]);
+  const teeSignatureEncoding = inferWalrusSignatureEncoding(teeSignature);
+  const inputHash = getOptionalSettlementString(payload, outputRecord, [
+    "inputHash",
+    "input_hash",
+    "teeRequestHash",
+    "tee_request_hash",
+  ]);
+  const outputHash = getOptionalSettlementString(payload, outputRecord, [
+    "outputHash",
+    "output_hash",
+    "teeOutputHash",
+    "tee_output_hash",
+  ]);
+
+  return {
+    blobId,
+    input: getRequiredRecordValue(payload, ["input"]),
+    output,
+    tee_id: normalizeBytes32(
+      getRequiredSettlementString(payload, outputRecord, ["teeId", "tee_id"]),
+      "tee_id",
+    ),
+    input_hash: inputHash ? normalizeBytes32(inputHash, "input_hash") : undefined,
+    output_hash: outputHash ? normalizeBytes32(outputHash, "output_hash") : undefined,
+    tee_signature: teeSignature,
+    tee_signature_bytes: encodeWalrusSignature(teeSignature, teeSignatureEncoding),
+    tee_timestamp: normalizeUint256(
+      getRequiredSettlementValue(payload, outputRecord, ["timestamp", "tee_timestamp"]),
+      "tee_timestamp",
+    ),
+    eth_address: normalizeAddress(
+      getRequiredRecordString(payload, ["ethAddress", "eth_address"]),
+      "eth_address",
+    ),
+    raw: payload,
+  };
+}
+
+/**
  * Encodes a raw tee signature into bytes calldata for the onchain verifySignatureNoTimestamp call.
  *
  * @param signature - Raw signature value.
@@ -354,17 +452,51 @@ export function encodeWalrusSignature(
 export async function verifyWalrusBatchTreeItemSignature(
   args: VerifyWalrusBatchTreeItemSignatureArgs,
 ): Promise<boolean> {
-  return args.publicClient.readContract({
-    address: resolveVerifierContractAddress(args),
-    abi: verifierContractAbi,
-    functionName: "verifySignatureNoTimestamp",
-    args: [
-      args.item.tee_id,
-      args.item.input_hash,
-      args.item.output_hash,
-      BigInt(args.item.tee_timestamp),
-      args.item.tee_signature,
-    ],
+  return verifyWalrusSignature({
+    teeId: args.item.tee_id,
+    inputHash: args.item.input_hash,
+    outputHash: args.item.output_hash,
+    teeTimestamp: args.item.tee_timestamp,
+    teeSignature: args.item.tee_signature,
+    verifierContractAddress: args.verifierContractAddress,
+    publicClient: args.publicClient,
+  });
+}
+
+/**
+ * Calls verifySignatureNoTimestamp for an individual Walrus settlement blob.
+ *
+ * @param args - Verification inputs for an individual settlement payload.
+ * @returns Whether the onchain verifySignatureNoTimestamp call returned true.
+ */
+export async function verifyWalrusIndividualSettlementSignature(
+  args: VerifyWalrusIndividualSettlementSignatureArgs,
+): Promise<boolean> {
+  const inputHash = args.inputHash ?? args.settlement.input_hash;
+  if (!inputHash) {
+    throw new Error(
+      "inputHash is required for individual settlement verification. Include it in the blob or pass it explicitly.",
+    );
+  }
+
+  const outputHash = args.outputHash ?? args.settlement.output_hash;
+  if (!outputHash) {
+    throw new Error(
+      "outputHash is required for individual settlement verification. Include it in the blob or pass it explicitly.",
+    );
+  }
+
+  return verifyWalrusSignature({
+    teeId: args.settlement.tee_id,
+    inputHash,
+    outputHash,
+    teeTimestamp: args.settlement.tee_timestamp,
+    teeSignature:
+      args.signatureEncoding === undefined
+        ? args.settlement.tee_signature_bytes
+        : encodeWalrusSignature(args.settlement.tee_signature, args.signatureEncoding),
+    verifierContractAddress: args.verifierContractAddress,
+    publicClient: args.publicClient,
   });
 }
 
@@ -447,6 +579,9 @@ export function createWalrusClient(options: WalrusClientOptions = {}) {
     fetchBatchTree(blobId: string, requestInit: FetchWalrusBlobOptions = {}) {
       return fetchWalrusBatchTree(blobId, { ...options, ...requestInit });
     },
+    fetchIndividualSettlement(blobId: string, requestInit: FetchWalrusBlobOptions = {}) {
+      return fetchWalrusIndividualSettlement(blobId, { ...options, ...requestInit });
+    },
     verifyBatchTreeSignatures(args: Omit<VerifyWalrusBatchTreeSignaturesArgs, "blobId" | "fetch">) {
       return verifyWalrusBatchTreeSignatures({
         ...args,
@@ -454,6 +589,9 @@ export function createWalrusClient(options: WalrusClientOptions = {}) {
         fetch: options.fetch,
         aggregatorUrl: args.aggregatorUrl ?? options.baseUrl,
       });
+    },
+    verifyIndividualSettlementSignature(args: VerifyWalrusIndividualSettlementSignatureArgs) {
+      return verifyWalrusIndividualSettlementSignature(args);
     },
   };
 }
@@ -519,6 +657,92 @@ function normalizeRequiredString(value: string, fieldName: string): string {
 function normalizeHex(value: string): Hex {
   const normalizedValue = normalizeRequiredString(value, "hex");
   return (normalizedValue.startsWith("0x") ? normalizedValue : `0x${normalizedValue}`) as Hex;
+}
+
+function getRequiredRecordString(value: Record<string, unknown>, keys: string[]): string {
+  const resolvedValue = getRequiredRecordValue(value, keys);
+  if (typeof resolvedValue !== "string") {
+    throw new Error(`Expected ${keys.join(" or ")} to be a string.`);
+  }
+  return resolvedValue;
+}
+
+function getOptionalRecordString(value: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const candidate = value[key];
+    if (candidate === undefined || candidate === null) {
+      continue;
+    }
+
+    if (typeof candidate !== "string") {
+      throw new Error(`Expected ${keys.join(" or ")} to be a string.`);
+    }
+
+    return candidate;
+  }
+
+  return undefined;
+}
+
+function getRequiredSettlementString(
+  payload: Record<string, unknown>,
+  outputRecord: Record<string, unknown> | null,
+  keys: string[],
+): string {
+  const resolvedValue = getRequiredSettlementValue(payload, outputRecord, keys);
+  if (typeof resolvedValue !== "string") {
+    throw new Error(`Expected ${keys.join(" or ")} to be a string.`);
+  }
+  return resolvedValue;
+}
+
+function getOptionalSettlementString(
+  payload: Record<string, unknown>,
+  outputRecord: Record<string, unknown> | null,
+  keys: string[],
+): string | undefined {
+  const topLevelValue = getOptionalRecordString(payload, keys);
+  if (topLevelValue !== undefined) {
+    return topLevelValue;
+  }
+
+  if (!outputRecord) {
+    return undefined;
+  }
+
+  return getOptionalRecordString(outputRecord, keys);
+}
+
+function getRequiredSettlementValue(
+  payload: Record<string, unknown>,
+  outputRecord: Record<string, unknown> | null,
+  keys: string[],
+): unknown {
+  for (const key of keys) {
+    if (key in payload) {
+      return payload[key];
+    }
+  }
+
+  if (outputRecord) {
+    for (const key of keys) {
+      if (key in outputRecord) {
+        return outputRecord[key];
+      }
+    }
+  }
+
+  throw new Error(`Missing required field: ${keys.join(" or ")}`);
+}
+
+function getRequiredRecordValue(value: Record<string, unknown>, keys: string[]): unknown {
+  for (const key of keys) {
+    if (key in value) {
+      return value[key];
+    }
+  }
+
+  throw new Error(`Missing required field: ${keys.join(" or ")}`);
 }
 
 function normalizeAddress(value: string, fieldName: string): Hex {
@@ -630,6 +854,33 @@ function normalizeBytes(value: string, fieldName: string): Hex {
   return normalizedValue;
 }
 
+function inferWalrusSignatureEncoding(signature: string): WalrusSignatureEncoding {
+  return isHexLike(signature.trim()) ? "hex" : "base64";
+}
+
+function verifyWalrusSignature(args: {
+  teeId: Hex;
+  inputHash: Hex;
+  outputHash: Hex;
+  teeTimestamp: string;
+  teeSignature: Hex;
+  verifierContractAddress?: Hex;
+  publicClient: WalrusSignatureVerificationClient;
+}): Promise<boolean> {
+  return args.publicClient.readContract({
+    address: resolveVerifierContractAddress(args),
+    abi: verifierContractAbi,
+    functionName: "verifySignatureNoTimestamp",
+    args: [
+      args.teeId,
+      args.inputHash,
+      args.outputHash,
+      BigInt(args.teeTimestamp),
+      args.teeSignature,
+    ],
+  });
+}
+
 function base64ToHex(value: string): Hex {
   const decodedValue = decodeBase64(value);
   let hex = "0x";
@@ -640,11 +891,28 @@ function base64ToHex(value: string): Hex {
 }
 
 function decodeBase64(value: string): string {
+  const normalizedValue = normalizeBase64(value);
   if (typeof globalThis.atob === "function") {
-    return globalThis.atob(value);
+    return globalThis.atob(normalizedValue);
   }
 
   throw new Error("Base64 signature decoding requires globalThis.atob in this runtime.");
+}
+
+function normalizeBase64(value: string): string {
+  let normalizedValue = normalizeRequiredString(value, "base64");
+  normalizedValue = normalizedValue.replace(/-/g, "+").replace(/_/g, "/");
+
+  const remainder = normalizedValue.length % 4;
+  if (remainder === 1) {
+    throw new Error("Invalid base64 signature length.");
+  }
+
+  if (remainder > 0) {
+    normalizedValue = normalizedValue.padEnd(normalizedValue.length + (4 - remainder), "=");
+  }
+
+  return normalizedValue;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

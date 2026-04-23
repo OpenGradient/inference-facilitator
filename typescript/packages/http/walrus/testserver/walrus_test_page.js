@@ -9,12 +9,15 @@ import {
 } from "og-fe-tee-verification";
 
 const state = {
+  loadedMode: "batch",
   loadedTree: null,
+  loadedIndividualSettlement: null,
   selectedItem: null,
 };
 
 const elements = {
   aggregatorUrl: document.getElementById("aggregatorUrl"),
+  settlementMode: document.getElementById("settlementMode"),
   blobId: document.getElementById("blobId"),
   teeId: document.getElementById("teeId"),
   inputHash: document.getElementById("inputHash"),
@@ -33,11 +36,18 @@ const elements = {
   itemCountStat: document.getElementById("itemCountStat"),
   itemsTableBody: document.getElementById("itemsTableBody"),
   selectedPayloadOutput: document.getElementById("selectedPayloadOutput"),
+  outcomeOutput: document.getElementById("outcomeOutput"),
   verificationOutput: document.getElementById("verificationOutput"),
 };
 
 elements.rpcUrl.value ||= DEFAULT_WALRUS_RPC_URL;
 elements.verifierContractAddress.value ||= DEFAULT_WALRUS_VERIFIER_CONTRACT_ADDRESS;
+syncSettlementModeUi();
+
+elements.settlementMode.addEventListener("change", () => {
+  syncSettlementModeUi();
+  resetLoadedState();
+});
 
 elements.fetchBlobButton.addEventListener("click", () => {
   void onFetchBlob();
@@ -52,7 +62,13 @@ elements.verifyBlobButton.addEventListener("click", () => {
 });
 
 async function onFetchBlob() {
-  setStatus("Fetching Walrus batch tree from the aggregator...", "success");
+  const settlementMode = elements.settlementMode.value;
+  setStatus(
+    settlementMode === "individual"
+      ? "Fetching Walrus individual settlement blob from the aggregator..."
+      : "Fetching Walrus batch tree from the aggregator...",
+    "success",
+  );
   setButtonState(true);
 
   try {
@@ -60,14 +76,47 @@ async function onFetchBlob() {
       baseUrl: requireValue(elements.aggregatorUrl.value, "Aggregator URL"),
     });
     const blobId = requireValue(elements.blobId.value, "Blob ID");
+    const settlementMode = elements.settlementMode.value;
+
+    if (settlementMode === "individual") {
+      const settlement = await walrus.fetchIndividualSettlement(blobId);
+
+      state.loadedMode = "individual";
+      state.loadedTree = null;
+      state.loadedIndividualSettlement = settlement;
+      state.selectedItem = null;
+
+      elements.blobIdStat.textContent = settlement.blobId;
+      elements.blobRootStat.textContent = "n/a";
+      elements.itemCountStat.textContent = "1";
+      elements.selectedPayloadOutput.textContent = JSON.stringify(settlement.raw, null, 2);
+      elements.outcomeOutput.textContent = JSON.stringify(settlement.output, null, 2);
+      elements.verificationOutput.textContent = "No verification run yet.";
+
+      renderIndividualSettlement(settlement);
+      applyIndividualSettlementToForm(settlement);
+
+      const hasHashes = Boolean(settlement.input_hash && settlement.output_hash);
+      setStatus(
+        hasHashes
+          ? `Fetched individual settlement blob ${settlement.blobId}.\nLoaded the stored payload and outcome into the page.`
+          : `Fetched individual settlement blob ${settlement.blobId}.\nLoaded the stored payload and outcome, but this blob is missing input/output hashes. Fill them in manually before verifying.`,
+        "success",
+      );
+      return;
+    }
+
     const loadedTree = await walrus.fetchBatchTree(blobId);
 
+    state.loadedMode = "batch";
     state.loadedTree = loadedTree;
+    state.loadedIndividualSettlement = null;
     state.selectedItem = null;
 
     elements.blobIdStat.textContent = loadedTree.blobId;
     elements.blobRootStat.textContent = loadedTree.merkleRoot;
     elements.itemCountStat.textContent = String(loadedTree.items.length);
+    elements.outcomeOutput.textContent = "Outcome display is only available for individual settlements.";
     elements.verificationOutput.textContent = "No verification run yet.";
 
     renderItems(loadedTree.items);
@@ -140,6 +189,10 @@ async function onVerifyBlob() {
   setButtonState(true);
 
   try {
+    if (state.loadedMode !== "batch") {
+      throw new Error("Full blob verification is only available for batch settlement blobs.");
+    }
+
     if (!state.loadedTree) {
       throw new Error("Load a blob first before verifying the full batch.");
     }
@@ -215,7 +268,30 @@ function renderItems(items) {
   }
 }
 
+function renderIndividualSettlement(settlement) {
+  elements.itemsTableBody.innerHTML = "";
+
+  const row = document.createElement("tr");
+  row.innerHTML = `
+    <td>0</td>
+    <td class="mono">${escapeHtml(settlement.tee_id)}</td>
+    <td class="mono">${escapeHtml(settlement.input_hash ?? "-")}</td>
+    <td class="mono">${escapeHtml(settlement.output_hash ?? "-")}</td>
+    <td class="mono">${escapeHtml(settlement.tee_signature)}</td>
+    <td>${escapeHtml(settlement.tee_timestamp)}</td>
+    <td><button class="secondary">Use Payload</button></td>
+  `;
+
+  const button = row.querySelector("button");
+  button.addEventListener("click", () => {
+    applyIndividualSettlementToForm(settlement);
+  });
+
+  elements.itemsTableBody.appendChild(row);
+}
+
 function applyItemToForm(item) {
+  state.loadedIndividualSettlement = null;
   state.selectedItem = item;
   elements.teeId.value = item.tee_id;
   elements.inputHash.value = item.input_hash;
@@ -224,7 +300,22 @@ function applyItemToForm(item) {
   elements.teeTimestamp.value = item.tee_timestamp;
   elements.signatureEncoding.value = "hex";
   elements.selectedPayloadOutput.textContent = JSON.stringify(item, null, 2);
+  elements.outcomeOutput.textContent = "Outcome display is only available for individual settlements.";
   setStatus(`Loaded blob item #${item.index} into the form.`, "success");
+}
+
+function applyIndividualSettlementToForm(settlement) {
+  state.loadedIndividualSettlement = settlement;
+  state.selectedItem = null;
+  elements.teeId.value = settlement.tee_id;
+  elements.inputHash.value = settlement.input_hash ?? "";
+  elements.outputHash.value = settlement.output_hash ?? "";
+  elements.teeSignature.value = settlement.tee_signature_bytes;
+  elements.teeTimestamp.value = settlement.tee_timestamp;
+  elements.signatureEncoding.value = "hex";
+  elements.selectedPayloadOutput.textContent = JSON.stringify(settlement.raw, null, 2);
+  elements.outcomeOutput.textContent = JSON.stringify(settlement.output, null, 2);
+  setStatus("Loaded the individual settlement payload into the form.", "success");
 }
 
 function readFormItem() {
@@ -257,6 +348,31 @@ function setButtonState(isBusy) {
   elements.fetchBlobButton.disabled = isBusy;
   elements.verifyItemButton.disabled = isBusy;
   elements.verifyBlobButton.disabled = isBusy;
+}
+
+function syncSettlementModeUi() {
+  const settlementMode = elements.settlementMode.value;
+  state.loadedMode = settlementMode;
+  elements.verifyBlobButton.classList.toggle("hidden", settlementMode !== "batch");
+}
+
+function resetLoadedState() {
+  state.loadedTree = null;
+  state.loadedIndividualSettlement = null;
+  state.selectedItem = null;
+  elements.teeId.value = "";
+  elements.inputHash.value = "";
+  elements.outputHash.value = "";
+  elements.teeSignature.value = "";
+  elements.teeTimestamp.value = "";
+  elements.signatureEncoding.value = "auto";
+  elements.blobIdStat.textContent = "-";
+  elements.blobRootStat.textContent = "-";
+  elements.itemCountStat.textContent = "0";
+  elements.itemsTableBody.innerHTML = '<tr><td colspan="7">No blob loaded yet.</td></tr>';
+  elements.selectedPayloadOutput.textContent = "No item selected yet.";
+  elements.outcomeOutput.textContent = "No individual settlement outcome loaded yet.";
+  elements.verificationOutput.textContent = "No verification run yet.";
 }
 
 function requireValue(value, label) {
