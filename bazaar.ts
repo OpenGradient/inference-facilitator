@@ -5,8 +5,6 @@
  * catalogs discovered x402 resources.
  */
 
-import { base58 } from "@scure/base";
-import { createKeyPairSignerFromBytes } from "@solana/kit";
 import { x402Facilitator } from "@x402/core/facilitator";
 import {
   PaymentPayload,
@@ -16,8 +14,6 @@ import {
 } from "@x402/core/types";
 import { toFacilitatorEvmSigner } from "@x402/evm";
 import { ExactEvmScheme } from "@x402/evm/exact/facilitator";
-import { toFacilitatorSvmSigner } from "@x402/svm";
-import { ExactSvmScheme } from "@x402/svm/exact/facilitator";
 import { extractDiscoveryInfo, DiscoveryInfo } from "@x402/extensions/bazaar";
 import dotenv from "dotenv";
 import express from "express";
@@ -32,19 +28,14 @@ const PORT = process.env.PORT || "4022";
 
 // Configuration - optional per network
 const evmPrivateKey = process.env.EVM_PRIVATE_KEY as `0x${string}` | undefined;
-const svmPrivateKey = process.env.SVM_PRIVATE_KEY as string | undefined;
 
-// Validate at least one private key is provided
-if (!evmPrivateKey && !svmPrivateKey) {
-  console.error(
-    "❌ At least one of EVM_PRIVATE_KEY or SVM_PRIVATE_KEY is required",
-  );
+if (!evmPrivateKey) {
+  console.error("❌ EVM_PRIVATE_KEY is required");
   process.exit(1);
 }
 
 // Network configuration
 const EVM_NETWORK = "eip155:84532"; // Base Sepolia
-const SVM_NETWORK = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"; // Solana Devnet
 
 // DiscoveredResource represents a discovered x402 resource for the bazaar catalog
 interface DiscoveredResource {
@@ -179,18 +170,6 @@ if (evmPrivateKey) {
     EVM_NETWORK,
     new ExactEvmScheme(evmSigner, { deployERC4337WithEIP6492: true }),
   );
-}
-
-// Register SVM scheme if private key is provided
-if (svmPrivateKey) {
-  const svmAccount = await createKeyPairSignerFromBytes(
-    base58.decode(svmPrivateKey),
-  );
-  console.info(`SVM Facilitator account: ${svmAccount.address}`);
-
-  const svmSigner = toFacilitatorSvmSigner(svmAccount);
-
-  facilitator.register(SVM_NETWORK, new ExactSvmScheme(svmSigner));
 }
 
 // Initialize Express app

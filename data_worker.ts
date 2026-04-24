@@ -1,4 +1,5 @@
 import { Worker } from "bullmq";
+import { summarizeDataSettlementJob, summarizeError } from "./logging.js";
 import { incrementMetric } from "./metrics.js";
 import {
   createDataWorkerContext,
@@ -16,7 +17,11 @@ const dataWorkerContext = createDataWorkerContext();
 
 const worker = new Worker<DataSettlementJobData>(
   DATA_SETTLEMENT_QUEUE_NAME,
-  async (job: { data: DataSettlementJobData }) => {
+  async (job: { id?: string; data: DataSettlementJobData }) => {
+    console.log("[data-worker] Processing data settlement job", {
+      jobId: job.id,
+      ...summarizeDataSettlementJob(job.data),
+    });
     return processDataSettlementJob(job.data, dataWorkerContext);
   },
   {
@@ -32,7 +37,10 @@ worker.on("completed", (job: { id?: string }) => {
 
 worker.on("failed", (job: { id?: string } | undefined, err: unknown) => {
   incrementMetric("worker.job.failed.count", ["worker:data"]);
-  console.error(`[data-worker] Failed job ${job?.id ?? "unknown"}:`, err);
+  console.error("[data-worker] Failed job", {
+    jobId: job?.id ?? "unknown",
+    ...summarizeError(err),
+  });
 });
 
 let isShuttingDown = false;

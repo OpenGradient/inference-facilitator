@@ -5,4 +5,5 @@ packages:
   - "typescript/packages/mcp"
   - "typescript/packages/http/*"
   - "typescript/packages/mechanisms/*"
+  - "!typescript/packages/mechanisms/svm"
   - "typescript/packages/legacy/*"

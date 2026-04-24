@@ -4,6 +4,7 @@ packages:
   - packages/mcp
   - packages/http/*
   - packages/mechanisms/*
+  - "!packages/mechanisms/svm"
   - packages/legacy/*
   - examples/facilitator
   - examples/**/*

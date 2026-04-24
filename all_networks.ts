@@ -3,6 +3,14 @@ import express from "express";
 import { randomUUID } from "node:crypto";
 import { type Server } from "node:http";
 import { getAddress, isAddress } from "viem";
+import {
+  debugLog,
+  summarizeDataSettlementJob,
+  summarizeError,
+  summarizePaymentPayload,
+  summarizePaymentRequirements,
+  summarizeVerifyResponse,
+} from "./logging.js";
 import { incrementMetric } from "./metrics.js";
 import {
   createBullMqConnection,
@@ -29,7 +37,11 @@ import {
   type PaymentSettlementJobData,
   type SettlementApiJobResponse,
 } from "./all_networks_types_helpers.js";
-import { type PaymentPayload, type PaymentRequirements, type VerifyResponse } from "@x402/core/types";
+import {
+  type PaymentPayload,
+  type PaymentRequirements,
+  type VerifyResponse,
+} from "@x402/core/types";
 
 const app = express();
 app.use(express.json());
@@ -51,7 +63,6 @@ const heartbeatRelayContext = (() => {
     return null;
   }
 })();
-
 
 const paymentQueue = new Queue<PaymentSettlementJobData>(PAYMENT_QUEUE_NAME, {
   connection,
@@ -154,6 +165,12 @@ async function enqueuePaymentSettlementJob(args: {
     },
   );
 
+  console.log("[api] Payment settlement job enqueued", {
+    jobId: paymentJobId,
+    ...summarizePaymentRequirements(args.paymentRequirements),
+    ...summarizePaymentPayload(args.paymentPayload),
+  });
+
   return toJobResponse(PAYMENT_QUEUE_NAME, paymentJob);
 }
 
@@ -175,14 +192,17 @@ async function enqueueDataSettlementJob(args: {
     throw new Error("Missing x-settlement-type header");
   }
 
+  debugLog("[api][debug] Parsed data settlement job", parsedSettlementHeader);
+
   const settlementJobId = `settlement-${randomUUID()}`;
-  const settlementJob = await dataSettlementQueue.add(
-    "data-settlement",
-    parsedSettlementHeader,
-    {
-      jobId: settlementJobId,
-    },
-  );
+  const settlementJob = await dataSettlementQueue.add("data-settlement", parsedSettlementHeader, {
+    jobId: settlementJobId,
+  });
+
+  console.log("[api] Data settlement job enqueued", {
+    jobId: settlementJobId,
+    ...summarizeDataSettlementJob(parsedSettlementHeader),
+  });
 
   return toJobResponse(DATA_SETTLEMENT_QUEUE_NAME, settlementJob);
 }
@@ -201,16 +221,26 @@ app.post("/verify", async (req, res) => {
       });
     }
 
+    console.log("[api] /verify request received", {
+      ...summarizePaymentRequirements(paymentRequirements),
+      ...summarizePaymentPayload(paymentPayload),
+    });
+    debugLog("[api][debug] /verify request body", req.body);
+
     const response: VerifyResponse = await facilitator.verify(paymentPayload, paymentRequirements);
+    console.log("[api] /verify request succeeded", {
+      ...summarizePaymentRequirements(paymentRequirements),
+      ...summarizeVerifyResponse(response),
+    });
+    debugLog("[api][debug] /verify response", response);
     res.json(response);
   } catch (error) {
-    console.error("Verify error:", error);
+    console.error("[api] /verify request failed", summarizeError(error));
     res.status(500).json({
       error: error instanceof Error ? error.message : "Unknown error",
     });
   }
 });
-
 
 app.post("/settle", async (req, res) => {
   incrementMetric("api.request.count", ["route:/settle", "method:POST"]);
@@ -226,13 +256,19 @@ app.post("/settle", async (req, res) => {
       });
     }
 
+    console.log("[api] /settle request received", {
+      ...summarizePaymentRequirements(paymentRequirements),
+      ...summarizePaymentPayload(paymentPayload),
+    });
+    debugLog("[api][debug] /settle request body", req.body);
+
     const paymentJob = await enqueuePaymentSettlementJob({
       paymentPayload,
       paymentRequirements,
     });
     return res.status(202).json({ paymentJob });
   } catch (error) {
-    console.error("Settle enqueue error:", error);
+    console.error("[api] /settle request failed", summarizeError(error));
     if (isSettlementError(error)) {
       return res.status(400).json({
         error: error.message,
@@ -256,6 +292,14 @@ app.post("/settle_data", async (req, res) => {
     }
 
     const settlementDataHeader = normalizeHeaderValue(req.get("x-settlement-data") || undefined);
+    console.log("[api] /settle_data request received", {
+      settlementType: settlementTypeHeader,
+      hasSettlementDataHeader: Boolean(settlementDataHeader),
+    });
+    debugLog("[api][debug] /settle_data headers", {
+      settlementTypeHeader,
+      settlementDataHeader,
+    });
     const settlementJob = await enqueueDataSettlementJob({
       settlementTypeHeader,
       settlementDataHeader,
@@ -270,7 +314,7 @@ app.post("/settle_data", async (req, res) => {
 
     return res.status(202).json({ settlementJob });
   } catch (error) {
-    console.error("Settle data enqueue error:", error);
+    console.error("[api] /settle_data request failed", summarizeError(error));
     if (isSettlementError(error)) {
       return res.status(400).json({
         error: error.message,
@@ -401,7 +445,13 @@ app.get("/supported", async (_req, res) => {
 });
 
 app.get("/health", (_req, res) => {
-  res.json({ status: "ok" });
+  const supported = facilitator.getSupported();
+  res.json({
+    status: "ok",
+    supportedKinds: supported.kinds,
+    extensions: supported.extensions,
+    signers: supported.signers,
+  });
 });
 
 let httpServer: Server | null = null;
@@ -441,8 +491,10 @@ process.on("SIGTERM", () => {
 });
 
 httpServer = app.listen(parseInt(PORT, 10), () => {
+  const supported = facilitator.getSupported();
   console.log(`🚀 All Networks API listening on http://localhost:${PORT}`);
-  console.log(`   Supported networks: ${facilitator.getSupported().kinds.map(k => k.network).join(", ")}`);
+  console.log(`   Supported networks: ${supported.kinds.map(k => k.network).join(", ")}`);
+  console.log(`   Supported extensions: ${supported.extensions.join(", ") || "(none)"}`);
   console.log(`   Payment queue: ${PAYMENT_QUEUE_NAME}`);
   console.log(`   Data settlement queue: ${DATA_SETTLEMENT_QUEUE_NAME}`);
   console.log();
