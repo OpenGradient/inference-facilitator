@@ -46,6 +46,7 @@ ENV NODE_ENV=production
 # Copy built files and necessary node_modules
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/typescript/node_modules ./typescript/node_modules
 COPY --from=builder /app/dist ./dist
 # Include workspace packages if needed at runtime
 COPY --from=builder /app/typescript/packages ./typescript/packages
