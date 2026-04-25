@@ -33,9 +33,18 @@ export const DATA_SETTLEMENT_QUEUE_NAME = resolveQueueName(
   "x402-settle-data-queue-v2",
   "DATA_SETTLEMENT_QUEUE_NAME",
 );
+export const DATA_SETTLEMENT_BATCH_QUEUE_NAME = DATA_SETTLEMENT_QUEUE_NAME;
+export const DATA_SETTLEMENT_INDIVIDUAL_QUEUE_NAME = resolveQueueName(
+  process.env.DATA_SETTLEMENT_INDIVIDUAL_QUEUE_NAME,
+  "x402-settle-data-individual-queue-v2",
+  "DATA_SETTLEMENT_INDIVIDUAL_QUEUE_NAME",
+);
 export const SHUTDOWN_TIMEOUT_MS = Number(process.env.SHUTDOWN_TIMEOUT_MS || 10_000);
 export const DATA_WORKER_EVM_PRIVATE_KEY_ENV = "DATA_WORKER_EVM_PRIVATE_KEY";
+export const DATA_INDIVIDUAL_WORKER_EVM_PRIVATE_KEY_ENV = "DATA_INDIVIDUAL_WORKER_EVM_PRIVATE_KEY";
 export const DATA_WORKER_SETTLEMENT_CONTRACT_ENV = "DATA_WORKER_SETTLEMENT_CONTRACT";
+export const DATA_INDIVIDUAL_SETTLEMENT_NONCE_KEY =
+  process.env.DATA_INDIVIDUAL_SETTLEMENT_NONCE_KEY || "x402:data-settlement:individual:nonce";
 export const HEARTBEAT_RELAY_EVM_PRIVATE_KEY_ENV = "HEARTBEAT_RELAY_EVM_PRIVATE_KEY";
 export const HEARTBEAT_RELAY_REGISTRY_CONTRACT_ENV = "HEARTBEAT_RELAY_REGISTRY_CONTRACT";
 export const OG_EVM_NETWORK = "eip155:10740" as const;
@@ -48,6 +57,12 @@ export const DATA_SETTLEMENT_BATCH_IDLE_TIMEOUT_MS = Number(
 );
 export const DATA_SETTLEMENT_BATCH_MAX_AGE_MS = Number(
   process.env.DATA_SETTLEMENT_BATCH_MAX_AGE_MS || 15 * 60 * 1000,
+);
+export const DATA_INDIVIDUAL_SETTLEMENT_UPLOAD_ATTEMPTS = Number(
+  process.env.DATA_INDIVIDUAL_SETTLEMENT_UPLOAD_ATTEMPTS || 5,
+);
+export const DATA_INDIVIDUAL_SETTLEMENT_UPLOAD_RETRY_DELAY_MS = Number(
+  process.env.DATA_INDIVIDUAL_SETTLEMENT_UPLOAD_RETRY_DELAY_MS || 10_000,
 );
 
 export type SettlementType = "private" | "batch" | "individual";
@@ -68,23 +83,48 @@ export type SettlementIndividualData = SettlementBatchData & {
   ethAddress: `0x${string}`;
 };
 
-export type DataSettlementJobData =
-  | {
-      settlementType: "batch";
-      data: SettlementBatchData;
-    }
-  | {
-      settlementType: "individual";
-      data: SettlementIndividualData;
-    };
+export type BatchDataSettlementJobData = {
+  settlementType: "batch";
+  data: SettlementBatchData;
+};
 
-export type ParsedSettlementHeader = DataSettlementJobData | { settlementType: "private" } | null;
+export type IndividualDataSettlementRequestJobData = {
+  settlementType: "individual";
+  data: SettlementIndividualData;
+};
+
+export type IndividualDataSettlementJobData = IndividualDataSettlementRequestJobData & {
+  settlementType: "individual";
+  data: SettlementIndividualData;
+  walrusPayload: string;
+  walrusBlobId: string;
+  queueNonce: number;
+  signerAddress: `0x${string}`;
+  signedTransaction: `0x${string}`;
+  txHash: `0x${string}`;
+};
+
+export type DataSettlementJobData = BatchDataSettlementJobData | IndividualDataSettlementJobData;
+export type DataSettlementLogJobData =
+  | BatchDataSettlementJobData
+  | IndividualDataSettlementRequestJobData
+  | IndividualDataSettlementJobData;
+
+export type ParsedSettlementHeader =
+  | BatchDataSettlementJobData
+  | IndividualDataSettlementRequestJobData
+  | { settlementType: "private" }
+  | null;
 
 export type SettlementHandlerResult = {
   acknowledged: true;
   settlementType: SettlementType;
   processedAt: string;
   notes: string;
+  walrusBlobId?: string;
+  queueNonce?: number;
+  signerAddress?: `0x${string}`;
+  txHash?: `0x${string}`;
 };
 
 export type PaymentSettlementJobData = {
@@ -111,6 +151,12 @@ export type DataWorkerContext = {
     walrusBlobId: string;
     signature: string;
   }) => Promise<`0x${string}`>;
+  sendSignedTransaction: (args: {
+    signedTransaction: `0x${string}`;
+    txHash: `0x${string}`;
+    txType: "individual";
+  }) => Promise<`0x${string}`>;
+  getPendingNonce: () => Promise<number>;
 };
 
 export type HeartbeatRelayRequest = {
@@ -141,6 +187,10 @@ export type SettlementApiJobResponse = {
   result?: unknown;
   error?: string;
   settlementType?: SettlementType;
+  queueNonce?: number;
+  signerAddress?: `0x${string}`;
+  txHash?: `0x${string}`;
+  walrusBlobId?: string;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {

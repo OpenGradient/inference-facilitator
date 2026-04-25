@@ -16,11 +16,13 @@ import {
   createBullMqConnection,
   createFacilitator,
   createHeartbeatRelayContext,
+  createIndividualSettlementPreparer,
   processPrivateSettlement,
 } from "./all_networks_shared.js";
 import {
   base64ToBytesCalldata,
-  DATA_SETTLEMENT_QUEUE_NAME,
+  DATA_SETTLEMENT_BATCH_QUEUE_NAME,
+  DATA_SETTLEMENT_INDIVIDUAL_QUEUE_NAME,
   getRequiredStringField,
   isSettlementError,
   parseUint256Field,
@@ -32,8 +34,10 @@ import {
   SHUTDOWN_TIMEOUT_MS,
   toStrictBytes32,
   toSerializableResult,
+  type BatchDataSettlementJobData,
   type DataSettlementJobData,
   type HeartbeatRelayRequest,
+  type IndividualDataSettlementJobData,
   type PaymentSettlementJobData,
   type SettlementApiJobResponse,
 } from "./all_networks_types_helpers.js";
@@ -48,6 +52,7 @@ app.use(express.json());
 
 const facilitator = await createFacilitator();
 const connection = createBullMqConnection();
+const individualSettlementPreparer = createIndividualSettlementPreparer();
 
 const heartbeatRelayContext = (() => {
   try {
@@ -72,13 +77,27 @@ const paymentQueue = new Queue<PaymentSettlementJobData>(PAYMENT_QUEUE_NAME, {
   },
 });
 
-const dataSettlementQueue = new Queue<DataSettlementJobData>(DATA_SETTLEMENT_QUEUE_NAME, {
-  connection,
-  defaultJobOptions: {
-    removeOnComplete: false,
-    removeOnFail: false,
+const dataSettlementQueue = new Queue<BatchDataSettlementJobData>(
+  DATA_SETTLEMENT_BATCH_QUEUE_NAME,
+  {
+    connection,
+    defaultJobOptions: {
+      removeOnComplete: false,
+      removeOnFail: false,
+    },
   },
-});
+);
+
+const individualDataSettlementQueue = new Queue<IndividualDataSettlementJobData>(
+  DATA_SETTLEMENT_INDIVIDUAL_QUEUE_NAME,
+  {
+    connection,
+    defaultJobOptions: {
+      removeOnComplete: false,
+      removeOnFail: false,
+    },
+  },
+);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -113,12 +132,20 @@ function parseHeartbeatRequestBody(value: unknown): HeartbeatRelayRequest {
   };
 }
 
-function queueNameFromJobId(jobId: string): "payment" | "settlement" | null {
+function queueNameFromJobId(
+  jobId: string,
+): "payment" | "batch-settlement" | "individual-settlement" | null {
   if (jobId.startsWith("payment-") || jobId.startsWith("payment:")) {
     return "payment";
   }
+  if (jobId.startsWith("settlement-batch-") || jobId.startsWith("settlement-batch:")) {
+    return "batch-settlement";
+  }
+  if (jobId.startsWith("settlement-individual-") || jobId.startsWith("settlement-individual:")) {
+    return "individual-settlement";
+  }
   if (jobId.startsWith("settlement-") || jobId.startsWith("settlement:")) {
-    return "settlement";
+    return "batch-settlement";
   }
   return null;
 }
@@ -141,9 +168,18 @@ async function toJobResponse(
     error: job.failedReason || undefined,
   };
 
-  if (queueName === DATA_SETTLEMENT_QUEUE_NAME) {
+  if (
+    queueName === DATA_SETTLEMENT_BATCH_QUEUE_NAME ||
+    queueName === DATA_SETTLEMENT_INDIVIDUAL_QUEUE_NAME
+  ) {
     const payload = job.data as DataSettlementJobData;
     response.settlementType = payload.settlementType;
+    if (payload.settlementType === "individual") {
+      response.queueNonce = payload.queueNonce;
+      response.signerAddress = payload.signerAddress;
+      response.txHash = payload.txHash;
+      response.walrusBlobId = payload.walrusBlobId;
+    }
   }
 
   return response;
@@ -194,17 +230,47 @@ async function enqueueDataSettlementJob(args: {
 
   debugLog("[api][debug] Parsed data settlement job", parsedSettlementHeader);
 
-  const settlementJobId = `settlement-${randomUUID()}`;
-  const settlementJob = await dataSettlementQueue.add("data-settlement", parsedSettlementHeader, {
-    jobId: settlementJobId,
-  });
+  if (parsedSettlementHeader.settlementType === "individual") {
+    const prepared = await individualSettlementPreparer.prepare(parsedSettlementHeader.data);
+    const settlementJobId = `settlement-individual-${randomUUID()}`;
+    const settlementJob = await individualDataSettlementQueue.add(
+      "individual-data-settlement",
+      {
+        ...parsedSettlementHeader,
+        ...prepared,
+      },
+      {
+        jobId: settlementJobId,
+      },
+    );
+
+    console.log("[api] Individual data settlement job enqueued", {
+      jobId: settlementJobId,
+      queueNonce: prepared.queueNonce,
+      signerAddress: prepared.signerAddress,
+      walrusBlobId: prepared.walrusBlobId,
+      txHash: prepared.txHash,
+      ...summarizeDataSettlementJob(parsedSettlementHeader),
+    });
+
+    return toJobResponse(DATA_SETTLEMENT_INDIVIDUAL_QUEUE_NAME, settlementJob);
+  }
+
+  const settlementJobId = `settlement-batch-${randomUUID()}`;
+  const settlementJob = await dataSettlementQueue.add(
+    "batch-data-settlement",
+    parsedSettlementHeader,
+    {
+      jobId: settlementJobId,
+    },
+  );
 
   console.log("[api] Data settlement job enqueued", {
     jobId: settlementJobId,
     ...summarizeDataSettlementJob(parsedSettlementHeader),
   });
 
-  return toJobResponse(DATA_SETTLEMENT_QUEUE_NAME, settlementJob);
+  return toJobResponse(DATA_SETTLEMENT_BATCH_QUEUE_NAME, settlementJob);
 }
 
 app.post("/verify", async (req, res) => {
@@ -403,17 +469,26 @@ app.get("/settle/:jobId", async (req, res) => {
       return res.json(await toJobResponse(PAYMENT_QUEUE_NAME, job));
     }
 
-    if (hintedQueue === "settlement") {
+    if (hintedQueue === "batch-settlement") {
       const job = await dataSettlementQueue.getJob(jobId);
       if (!job) {
         return res.status(404).json({ error: `Settlement job not found: ${jobId}` });
       }
-      return res.json(await toJobResponse(DATA_SETTLEMENT_QUEUE_NAME, job));
+      return res.json(await toJobResponse(DATA_SETTLEMENT_BATCH_QUEUE_NAME, job));
     }
 
-    const [paymentJob, settlementJob] = await Promise.all([
+    if (hintedQueue === "individual-settlement") {
+      const job = await individualDataSettlementQueue.getJob(jobId);
+      if (!job) {
+        return res.status(404).json({ error: `Settlement job not found: ${jobId}` });
+      }
+      return res.json(await toJobResponse(DATA_SETTLEMENT_INDIVIDUAL_QUEUE_NAME, job));
+    }
+
+    const [paymentJob, settlementJob, individualSettlementJob] = await Promise.all([
       paymentQueue.getJob(jobId),
       dataSettlementQueue.getJob(jobId),
+      individualDataSettlementQueue.getJob(jobId),
     ]);
 
     if (paymentJob) {
@@ -421,7 +496,13 @@ app.get("/settle/:jobId", async (req, res) => {
     }
 
     if (settlementJob) {
-      return res.json(await toJobResponse(DATA_SETTLEMENT_QUEUE_NAME, settlementJob));
+      return res.json(await toJobResponse(DATA_SETTLEMENT_BATCH_QUEUE_NAME, settlementJob));
+    }
+
+    if (individualSettlementJob) {
+      return res.json(
+        await toJobResponse(DATA_SETTLEMENT_INDIVIDUAL_QUEUE_NAME, individualSettlementJob),
+      );
     }
 
     return res.status(404).json({ error: `Settlement job not found: ${jobId}` });
@@ -476,7 +557,12 @@ async function shutdown(signal: string): Promise<void> {
     });
   }
 
-  await Promise.allSettled([paymentQueue.close(), dataSettlementQueue.close()]);
+  await Promise.allSettled([
+    paymentQueue.close(),
+    dataSettlementQueue.close(),
+    individualDataSettlementQueue.close(),
+    individualSettlementPreparer.close(),
+  ]);
 
   clearTimeout(forcedExitTimer);
   process.exit(0);
@@ -496,6 +582,7 @@ httpServer = app.listen(parseInt(PORT, 10), () => {
   console.log(`   Supported networks: ${supported.kinds.map(k => k.network).join(", ")}`);
   console.log(`   Supported extensions: ${supported.extensions.join(", ") || "(none)"}`);
   console.log(`   Payment queue: ${PAYMENT_QUEUE_NAME}`);
-  console.log(`   Data settlement queue: ${DATA_SETTLEMENT_QUEUE_NAME}`);
+  console.log(`   Batch data settlement queue: ${DATA_SETTLEMENT_BATCH_QUEUE_NAME}`);
+  console.log(`   Individual data settlement queue: ${DATA_SETTLEMENT_INDIVIDUAL_QUEUE_NAME}`);
   console.log();
 });

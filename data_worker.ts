@@ -8,16 +8,16 @@ import {
 } from "./all_networks_shared.js";
 import {
   DATA_WORKER_EVM_PRIVATE_KEY_ENV,
-  DATA_SETTLEMENT_QUEUE_NAME,
+  DATA_SETTLEMENT_BATCH_QUEUE_NAME,
   SHUTDOWN_TIMEOUT_MS,
-  type DataSettlementJobData,
+  type BatchDataSettlementJobData,
 } from "./all_networks_types_helpers.js";
 
 const dataWorkerContext = createDataWorkerContext();
 
-const worker = new Worker<DataSettlementJobData>(
-  DATA_SETTLEMENT_QUEUE_NAME,
-  async (job: { id?: string; data: DataSettlementJobData }) => {
+const worker = new Worker<BatchDataSettlementJobData>(
+  DATA_SETTLEMENT_BATCH_QUEUE_NAME,
+  async (job: { id?: string; data: BatchDataSettlementJobData }) => {
     console.log("[data-worker] Processing data settlement job", {
       jobId: job.id,
       ...summarizeDataSettlementJob(job.data),
@@ -72,7 +72,7 @@ process.on("SIGTERM", () => {
   void shutdown("SIGTERM");
 });
 
-console.log(`[data-worker] Listening on queue: ${DATA_SETTLEMENT_QUEUE_NAME}`);
+console.log(`[data-worker] Listening on queue: ${DATA_SETTLEMENT_BATCH_QUEUE_NAME}`);
 console.log(
   `[data-worker] Using ${DATA_WORKER_EVM_PRIVATE_KEY_ENV} for signer ${dataWorkerContext.signerAddress} on ${dataWorkerContext.chainName} (${dataWorkerContext.chainId})`,
 );
