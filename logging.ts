@@ -14,7 +14,7 @@ import {
   validateErc20ApprovalGasSponsoringInfo,
 } from "@x402/extensions";
 import type {
-  DataSettlementJobData,
+  DataSettlementLogJobData,
   SettlementBatchData,
   SettlementIndividualData,
 } from "./all_networks_types_helpers.js";
@@ -112,13 +112,16 @@ function diagnoseEip2612Extension(paymentPayload: PaymentPayload): LogSummary {
   const info = extractEip2612GasSponsoringInfo(paymentPayload);
   if (info) {
     return {
-      eip2612State: validateEip2612GasSponsoringInfo(info) ? "client-signed" : "client-signed-invalid",
+      eip2612State: validateEip2612GasSponsoringInfo(info)
+        ? "client-signed"
+        : "client-signed-invalid",
       eip2612InfoShape: infoShape,
     };
   }
 
   return {
-    eip2612State: infoShape === "description,version" ? "server-declared-only" : "missing-required-fields",
+    eip2612State:
+      infoShape === "description,version" ? "server-declared-only" : "missing-required-fields",
     eip2612InfoShape: infoShape,
     probableIssue:
       "eip2612 declared by server but signed permit fields are missing from paymentPayload.extensions",
@@ -219,7 +222,7 @@ export function summarizeError(error: unknown): LogSummary {
   };
 }
 
-export function summarizeDataSettlementJob(jobData: DataSettlementJobData): LogSummary {
+export function summarizeDataSettlementJob(jobData: DataSettlementLogJobData): LogSummary {
   if (jobData.settlementType === "batch") {
     return {
       settlementType: jobData.settlementType,

@@ -57,6 +57,13 @@ REDIS_PORT=6379
 SETTLEMENT_BATCH_SIZE=20
 SETTLEMENT_BATCH_TIMEOUT=60000
 WALRUS_PUBLISHER_URL=http://localhost:9002/v1/blobs
+
+# Optional: Individual settlement queue/signing
+DATA_SETTLEMENT_INDIVIDUAL_QUEUE_NAME=x402-settle-data-individual-queue-v1
+DATA_INDIVIDUAL_WORKER_EVM_PRIVATE_KEY=0xDedicatedIndividualSettlementKey
+DATA_INDIVIDUAL_SETTLEMENT_NONCE_KEY=x402:data-settlement:individual:nonce
+WALRUS_NETWORK=testnet
+SUI_RPC_URL=https://fullnode.testnet.sui.io:443
 ```
 
 3. Start the server:

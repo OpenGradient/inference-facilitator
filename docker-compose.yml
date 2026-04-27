@@ -1,4 +1,4 @@
-version: '3.8'
+version: "3.8"
 
 services:
   facilitator:
@@ -52,6 +52,22 @@ services:
     restart: unless-stopped
     command: ["node", "dist/data_worker.js"]
 
+  individual-data-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - NODE_ENV=production
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    restart: unless-stopped
+    command: ["node", "dist/individual_data_worker.js"]
+
   publisher:
     image: mysten/walrus-service:main-arm64
     container_name: walrus-publisher
@@ -62,6 +78,7 @@ services:
       - ./walrus_config:/root/.walrus
     command: >
       /opt/walrus/bin/walrus publisher --config /root/.walrus/suiconfig.yaml --bind-address 0.0.0.0:9002 --sub-wallets-dir /root/.walrus/
+
 
   redis:
     image: redis:alpine

@@ -8,11 +8,15 @@ import { toFacilitatorEvmSigner, type FacilitatorEvmSigner } from "@x402/evm";
 import { ExactEvmScheme } from "@x402/evm/exact/facilitator";
 import { UptoEvmScheme } from "@x402/evm/upto/facilitator";
 import { StandardMerkleTree } from "@openzeppelin/merkle-tree";
-import type { RedisOptions } from "ioredis";
+import { SuiClient, getFullnodeUrl } from "@mysten/sui/client";
+import { WalrusClient } from "@mysten/walrus";
+import { Redis, type RedisOptions } from "ioredis";
 import {
   createWalletClient,
   defineChain,
+  encodeFunctionData,
   http,
+  keccak256,
   parseGwei,
   parseTransaction,
   publicActions,
@@ -34,9 +38,13 @@ import { gaugeMetric, histogramMetric, incrementMetric } from "./metrics.js";
 import {
   BASE_MAINNET_NETWORK,
   base64ToBytesCalldata,
+  DATA_INDIVIDUAL_SETTLEMENT_UPLOAD_ATTEMPTS,
+  DATA_INDIVIDUAL_SETTLEMENT_UPLOAD_RETRY_DELAY_MS,
   DATA_SETTLEMENT_BATCH_BUFFER_SIZE,
   DATA_SETTLEMENT_BATCH_IDLE_TIMEOUT_MS,
   DATA_SETTLEMENT_BATCH_MAX_AGE_MS,
+  DATA_INDIVIDUAL_SETTLEMENT_NONCE_KEY,
+  DATA_INDIVIDUAL_WORKER_EVM_PRIVATE_KEY_ENV,
   DATA_WORKER_EVM_PRIVATE_KEY_ENV,
   DATA_WORKER_SETTLEMENT_CONTRACT_ENV,
   HEARTBEAT_RELAY_EVM_PRIVATE_KEY_ENV,
@@ -48,6 +56,7 @@ import {
   type DataSettlementJobData,
   type DataWorkerContext,
   type HeartbeatRelayContext,
+  type IndividualDataSettlementJobData,
   type SettlementBatchData,
   type SettlementHandlerResult,
   type SettlementIndividualData,
@@ -111,6 +120,16 @@ type WalrusUploadResponse = {
   };
 };
 
+type WalrusNetwork = "testnet" | "mainnet";
+
+type IndividualSettlementPreparer = {
+  signerAddress: `0x${string}`;
+  close: () => Promise<void>;
+  prepare: (
+    data: SettlementIndividualData,
+  ) => Promise<Omit<IndividualDataSettlementJobData, "settlementType" | "data">>;
+};
+
 const DEFAULT_SPONSORED_RAW_TX_GAS = 70_000n;
 const DEFAULT_SPONSORED_RAW_TX_MAX_FEE_PER_GAS = 1_000_000_000n;
 
@@ -144,6 +163,12 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: str
   }
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => {
+    setTimeout(resolve, ms);
+  });
+}
+
 function emitBatchOldestAgeMetric(): void {
   const oldestAgeMs =
     batchSettlementBuffer.length > 0 && batchSettlementFirstBufferedAtMs !== null
@@ -152,11 +177,17 @@ function emitBatchOldestAgeMetric(): void {
   gaugeMetric("data.batch.oldest_age_ms", oldestAgeMs, ["worker:data"]);
 }
 
+function isAlreadyKnownRawTransactionError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.toLowerCase().includes("already known");
+}
+
 let batchSettlementBuffer: SettlementBatchData[] = [];
 let batchSettlementFlushTimer: ReturnType<typeof setTimeout> | null = null;
 let batchSettlementMaxAgeTimer: ReturnType<typeof setTimeout> | null = null;
 let batchSettlementFirstBufferedAtMs: number | null = null;
 let batchFlushInFlight: Promise<BatchFlushResult | null> | null = null;
+let walrusClient: WalrusClient | null = null;
 
 const settlementContractAbi = [
   {
@@ -405,7 +436,7 @@ export async function uploadToWalrus(
 ): Promise<string> {
   const publisherUrl = process.env.WALRUS_PUBLISHER_URL || "http://localhost:9002/v1/blobs";
   const url = `${publisherUrl}?epochs=10`;
-  const walrusUploadTimeoutMs = Number(process.env.WALRUS_UPLOAD_TIMEOUT_MS || 30_000);
+  const walrusUploadTimeoutMs = Number(process.env.WALRUS_UPLOAD_TIMEOUT_MS || 30_0000);
   console.log(`[settlement] Uploading ${uploadKind} to Walrus via ${publisherUrl}`);
 
   const abortController = new AbortController();
@@ -454,6 +485,49 @@ export async function uploadToWalrus(
 
   incrementMetric("data.walrus_upload.failure.count", ["worker:data", `kind:${uploadKind}`]);
   throw new Error("Unexpected response format from Walrus Publisher");
+}
+
+function getWalrusNetwork(): WalrusNetwork {
+  const network = process.env.WALRUS_NETWORK || "mainnet";
+  if (network !== "testnet" && network !== "mainnet") {
+    throw new Error("WALRUS_NETWORK must be either testnet or mainnet");
+  }
+  return network;
+}
+
+function getWalrusClient(): WalrusClient {
+  if (walrusClient) {
+    return walrusClient;
+  }
+
+  const network = getWalrusNetwork();
+  const suiClient = new SuiClient({
+    url: process.env.SUI_RPC_URL || getFullnodeUrl(network),
+  });
+
+  walrusClient = new WalrusClient({
+    network,
+    suiClient,
+  });
+
+  return walrusClient;
+}
+
+export function createIndividualWalrusPayload(data: SettlementIndividualData): string {
+  return JSON.stringify({
+    input: data.input,
+    output: data.output,
+    teeSignature: data.teeSignature,
+    teeId: data.teeId,
+    timestamp: data.timestamp,
+    ethAddress: data.ethAddress,
+  });
+}
+
+export async function computeWalrusBlobId(data: string): Promise<string> {
+  const bytes = new TextEncoder().encode(data);
+  const result = await getWalrusClient().encodeBlob(bytes);
+  return result.blobId;
 }
 
 export async function processBatchSettlement(
@@ -553,6 +627,120 @@ export async function processIndividualSettlement(
   }
 }
 
+async function uploadIndividualPayloadWithRetry(
+  jobData: IndividualDataSettlementJobData,
+): Promise<void> {
+  const attempts = Math.max(1, DATA_INDIVIDUAL_SETTLEMENT_UPLOAD_ATTEMPTS);
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const uploadedBlobId = await uploadToWalrus(jobData.walrusPayload, "individual-payload");
+      if (uploadedBlobId !== jobData.walrusBlobId) {
+        throw new Error(
+          `Walrus blob id mismatch: expected ${jobData.walrusBlobId}, got ${uploadedBlobId}`,
+        );
+      }
+      return;
+    } catch (error) {
+      const isFinalAttempt = attempt === attempts;
+      console.error(
+        isFinalAttempt
+          ? "[settlement] Individual Walrus upload failed; no tx broadcast"
+          : "[settlement] Individual Walrus upload failed; retrying before broadcast",
+        {
+          attempt,
+          attempts,
+          queueNonce: jobData.queueNonce,
+          txHash: jobData.txHash,
+          walrusBlobId: jobData.walrusBlobId,
+          ...summarizeError(error),
+        },
+      );
+
+      if (isFinalAttempt) {
+        throw error;
+      }
+      await sleep(DATA_INDIVIDUAL_SETTLEMENT_UPLOAD_RETRY_DELAY_MS);
+    }
+  }
+}
+
+export async function processPreSignedIndividualSettlement(
+  jobData: IndividualDataSettlementJobData,
+  context: DataWorkerContext,
+): Promise<SettlementHandlerResult> {
+  const pendingNonce = await context.getPendingNonce();
+  if (jobData.queueNonce < pendingNonce) {
+    console.error("[settlement] Individual settlement nonce is already consumed; skipping tx", {
+      queueNonce: jobData.queueNonce,
+      pendingNonce,
+      txHash: jobData.txHash,
+      walrusBlobId: jobData.walrusBlobId,
+    });
+    return {
+      acknowledged: true,
+      settlementType: "individual",
+      processedAt: new Date().toISOString(),
+      walrusBlobId: jobData.walrusBlobId,
+      queueNonce: jobData.queueNonce,
+      signerAddress: jobData.signerAddress,
+      txHash: jobData.txHash,
+      notes: `Individual settlement skipped because nonce ${jobData.queueNonce} is already below pending nonce ${pendingNonce}; txHash=${jobData.txHash}.`,
+    };
+  }
+  if (jobData.queueNonce > pendingNonce) {
+    throw new Error(
+      `Individual settlement nonce ${jobData.queueNonce} is ahead of pending nonce ${pendingNonce}; waiting for earlier nonce before upload/broadcast`,
+    );
+  }
+
+  await uploadIndividualPayloadWithRetry(jobData);
+
+  let broadcastTxHash = jobData.txHash;
+  let broadcastWarning: string | undefined;
+  try {
+    broadcastTxHash = await context.sendSignedTransaction({
+      signedTransaction: jobData.signedTransaction,
+      txHash: jobData.txHash,
+      txType: "individual",
+    });
+  } catch (error) {
+    broadcastWarning = error instanceof Error ? error.message : String(error);
+    console.error("[settlement] Individual signed tx broadcast attempt failed; advancing queue", {
+      queueNonce: jobData.queueNonce,
+      txHash: jobData.txHash,
+      walrusBlobId: jobData.walrusBlobId,
+      ...summarizeError(error),
+    });
+  }
+
+  console.log("[settlement] Pre-signed individual settlement broadcast:", {
+    signerAddress: jobData.signerAddress,
+    chainId: context.chainId,
+    chainName: context.chainName,
+    queueNonce: jobData.queueNonce,
+    walrusBlobId: jobData.walrusBlobId,
+    txHash: broadcastTxHash,
+    broadcastWarning,
+    ...summarizeDataSettlementJob(jobData),
+  });
+
+  incrementMetric("data.individual_settled.count", ["worker:data-individual"]);
+
+  return {
+    acknowledged: true,
+    settlementType: "individual",
+    processedAt: new Date().toISOString(),
+    walrusBlobId: jobData.walrusBlobId,
+    queueNonce: jobData.queueNonce,
+    signerAddress: jobData.signerAddress,
+    txHash: broadcastTxHash,
+    notes: broadcastWarning
+      ? `Individual settlement uploaded but broadcast had warning (${broadcastWarning}; nonce=${jobData.queueNonce}, walrusBlobId=${jobData.walrusBlobId}, txHash=${broadcastTxHash}).`
+      : `Individual settlement uploaded and broadcast (nonce=${jobData.queueNonce}, walrusBlobId=${jobData.walrusBlobId}, txHash=${broadcastTxHash}).`,
+  };
+}
+
 export async function processDataSettlementJob(
   jobData: DataSettlementJobData,
   context: DataWorkerContext,
@@ -560,13 +748,130 @@ export async function processDataSettlementJob(
   if (jobData.settlementType === "batch") {
     return processBatchSettlement(jobData.data, context);
   }
-  return processIndividualSettlement(jobData.data, context);
+  return processPreSignedIndividualSettlement(jobData, context);
 }
 
-export function createDataWorkerContext(): DataWorkerContext {
-  const privateKey = process.env[DATA_WORKER_EVM_PRIVATE_KEY_ENV] as `0x${string}` | undefined;
+async function reserveIndividualSettlementNonce(args: {
+  redis: Redis;
+  walletClient: {
+    getTransactionCount(args: { address: `0x${string}`; blockTag: "pending" }): Promise<number>;
+  };
+  signerAddress: `0x${string}`;
+}): Promise<number> {
+  const pendingNonce = await args.walletClient.getTransactionCount({
+    address: args.signerAddress,
+    blockTag: "pending",
+  });
+  const script = `
+local key = KEYS[1]
+local pending = tonumber(ARGV[1])
+local baseline = pending - 1
+local current = redis.call("GET", key)
+if (not current) or (tonumber(current) < baseline) then
+  redis.call("SET", key, baseline)
+end
+return redis.call("INCR", key)
+`;
+  const reserved = await args.redis.eval(
+    script,
+    1,
+    DATA_INDIVIDUAL_SETTLEMENT_NONCE_KEY,
+    pendingNonce,
+  );
+  const nonce = Number(reserved);
+  if (!Number.isSafeInteger(nonce) || nonce < 0) {
+    throw new Error(`Invalid reserved individual settlement nonce: ${String(reserved)}`);
+  }
+  if (nonce > pendingNonce) {
+    console.warn("[settlement] Reserved individual nonce is ahead of chain pending nonce", {
+      reservedNonce: nonce,
+      pendingNonce,
+      signerAddress: args.signerAddress,
+    });
+  }
+  return nonce;
+}
+
+export function createIndividualSettlementPreparer(): IndividualSettlementPreparer {
+  const privateKey = process.env[DATA_INDIVIDUAL_WORKER_EVM_PRIVATE_KEY_ENV] as
+    | `0x${string}`
+    | undefined;
   if (!privateKey) {
-    throw new Error(`${DATA_WORKER_EVM_PRIVATE_KEY_ENV} is required for data worker`);
+    throw new Error(`${DATA_INDIVIDUAL_WORKER_EVM_PRIVATE_KEY_ENV} is required`);
+  }
+
+  const settlementContractAddress = (process.env[DATA_WORKER_SETTLEMENT_CONTRACT_ENV] ||
+    process.env.X402_SETTLEMENT_CONTRACT) as `0x${string}` | undefined;
+  if (!settlementContractAddress) {
+    throw new Error(
+      `${DATA_WORKER_SETTLEMENT_CONTRACT_ENV} (or X402_SETTLEMENT_CONTRACT) is required for individual settlement signing`,
+    );
+  }
+
+  const account = privateKeyToAccount(privateKey);
+  const walletClient = createWalletClient({
+    account,
+    chain: ogEvm,
+    transport: http(),
+  }).extend(publicActions);
+  const redis = new Redis(createBullMqConnection());
+
+  return {
+    signerAddress: account.address,
+    close: async () => {
+      await redis.quit();
+    },
+    prepare: async (data: SettlementIndividualData) => {
+      const walrusPayload = createIndividualWalrusPayload(data);
+      const walrusBlobId = await computeWalrusBlobId(walrusPayload);
+      const queueNonce = await reserveIndividualSettlementNonce({
+        redis,
+        walletClient,
+        signerAddress: account.address,
+      });
+      const decodedSignatureHex = base64ToBytesCalldata(data.teeSignature);
+      const calldata = encodeFunctionData({
+        abi: settlementContractAbi,
+        functionName: "settleIndividual",
+        args: [
+          data.teeId,
+          toStrictBytes32(data.inputHash, "inputHash"),
+          toStrictBytes32(data.outputHash, "outputHash"),
+          BigInt(data.timestamp),
+          data.ethAddress,
+          toHex(walrusBlobId),
+          toBytesCalldata(decodedSignatureHex),
+        ],
+      });
+      const signedTransaction = await account.signTransaction({
+        chainId: ogEvm.id,
+        to: settlementContractAddress,
+        data: calldata,
+        gas: DATA_WORKER_SETTLEMENT_GAS_LIMIT,
+        maxFeePerGas: parseGwei("0.002"),
+        maxPriorityFeePerGas: parseGwei("0.001"),
+        nonce: queueNonce,
+        type: "eip1559",
+      });
+
+      return {
+        walrusPayload,
+        walrusBlobId,
+        queueNonce,
+        signerAddress: account.address,
+        signedTransaction,
+        txHash: keccak256(signedTransaction),
+      };
+    },
+  };
+}
+
+export function createDataWorkerContext(
+  privateKeyEnvName = DATA_WORKER_EVM_PRIVATE_KEY_ENV,
+): DataWorkerContext {
+  const privateKey = process.env[privateKeyEnvName] as `0x${string}` | undefined;
+  if (!privateKey) {
+    throw new Error(`${privateKeyEnvName} is required for data worker`);
   }
 
   const settlementContractAddress = (process.env[DATA_WORKER_SETTLEMENT_CONTRACT_ENV] ||
@@ -591,6 +896,11 @@ export function createDataWorkerContext(): DataWorkerContext {
     chainId: ogEvm.id,
     chainName: ogEvm.name,
     settlementContractAddress,
+    getPendingNonce: () =>
+      ogEvmWalletClient.getTransactionCount({
+        address: account.address,
+        blockTag: "pending",
+      }),
     submitBatchSettlement: async (
       merkleRoot: `0x${string}`,
       batchSize: number,
@@ -668,6 +978,64 @@ export function createDataWorkerContext(): DataWorkerContext {
         incrementMetric("data.tx.failure.count", [
           "worker:data",
           "tx_type:individual",
+          `stage:${stage}`,
+        ]);
+        throw error;
+      }
+    },
+    sendSignedTransaction: async ({
+      signedTransaction,
+      txHash,
+      txType,
+    }): Promise<`0x${string}`> => {
+      let stage: "broadcast" | "receipt" = "broadcast";
+      try {
+        let broadcastTxHash = txHash;
+        try {
+          broadcastTxHash = await ogEvmWalletClient.sendRawTransaction({
+            serializedTransaction: signedTransaction,
+          });
+        } catch (error) {
+          if (!isAlreadyKnownRawTransactionError(error)) {
+            throw error;
+          }
+          console.warn(
+            "[settlement] Signed individual transaction already known; waiting on hash",
+            {
+              txHash,
+              signerAddress: account.address,
+              chainId: ogEvm.id,
+              chainName: ogEvm.name,
+            },
+          );
+        }
+
+        if (broadcastTxHash.toLowerCase() !== txHash.toLowerCase()) {
+          throw new Error(`Broadcast tx hash mismatch: expected ${txHash}, got ${broadcastTxHash}`);
+        }
+
+        stage = "receipt";
+        const receipt = await withTimeout(
+          ogEvmWalletClient.waitForTransactionReceipt({ hash: broadcastTxHash }),
+          DATA_WORKER_TX_RECEIPT_TIMEOUT_MS,
+          "Signed individual settlement receipt wait",
+        );
+        if (receipt.status !== "success") {
+          console.warn(
+            "[settlement] Signed individual settlement transaction reverted after mining; nonce consumed",
+            {
+              txHash: broadcastTxHash,
+              signerAddress: account.address,
+              chainId: ogEvm.id,
+              chainName: ogEvm.name,
+            },
+          );
+        }
+        return broadcastTxHash;
+      } catch (error) {
+        incrementMetric("data.tx.failure.count", [
+          "worker:data-individual",
+          `tx_type:${txType}`,
           `stage:${stage}`,
         ]);
         throw error;
@@ -786,7 +1154,7 @@ function createErc20ApprovalGasSponsorSigner(args: {
         if (typeof transaction === "string") {
           const parsed = parseTransaction(transaction);
           const payerAddress = await recoverTransactionAddress({
-            serializedTransaction: transaction,
+            serializedTransaction: transaction as `0x02${string}`,
           });
           const gas = parsed.gas ?? DEFAULT_SPONSORED_RAW_TX_GAS;
           const maxFeePerGas =
