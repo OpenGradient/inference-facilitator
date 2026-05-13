@@ -436,7 +436,7 @@ export async function uploadToWalrus(
 ): Promise<string> {
   const publisherUrl = process.env.WALRUS_PUBLISHER_URL || "http://localhost:9002/v1/blobs";
   const url = `${publisherUrl}?epochs=10`;
-  const walrusUploadTimeoutMs = Number(process.env.WALRUS_UPLOAD_TIMEOUT_MS || 30_0000);
+  const walrusUploadTimeoutMs = Number(process.env.WALRUS_UPLOAD_TIMEOUT_MS || 30_000);
   console.log(`[settlement] Uploading ${uploadKind} to Walrus via ${publisherUrl}`);
 
   const abortController = new AbortController();
@@ -630,9 +630,7 @@ export async function processIndividualSettlement(
 async function uploadIndividualPayloadWithRetry(
   jobData: IndividualDataSettlementJobData,
 ): Promise<void> {
-  const attempts = Math.max(1, DATA_INDIVIDUAL_SETTLEMENT_UPLOAD_ATTEMPTS);
-
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+  for (let attempt = 0; attempt < DATA_INDIVIDUAL_SETTLEMENT_UPLOAD_ATTEMPTS; attempt += 1) {
     try {
       const uploadedBlobId = await uploadToWalrus(jobData.walrusPayload, "individual-payload");
       if (uploadedBlobId !== jobData.walrusBlobId) {
@@ -642,14 +640,15 @@ async function uploadIndividualPayloadWithRetry(
       }
       return;
     } catch (error) {
-      const isFinalAttempt = attempt === attempts;
+      const attemptNumber = attempt + 1;
+      const isFinalAttempt = attemptNumber === DATA_INDIVIDUAL_SETTLEMENT_UPLOAD_ATTEMPTS;
       console.error(
         isFinalAttempt
           ? "[settlement] Individual Walrus upload failed; no tx broadcast"
           : "[settlement] Individual Walrus upload failed; retrying before broadcast",
         {
-          attempt,
-          attempts,
+          attempt: attemptNumber,
+          attempts: DATA_INDIVIDUAL_SETTLEMENT_UPLOAD_ATTEMPTS,
           queueNonce: jobData.queueNonce,
           txHash: jobData.txHash,
           walrusBlobId: jobData.walrusBlobId,
@@ -660,6 +659,15 @@ async function uploadIndividualPayloadWithRetry(
       if (isFinalAttempt) {
         throw error;
       }
+
+      console.log("[settlement] Waiting before retrying individual Walrus upload", {
+        retryDelayMs: DATA_INDIVIDUAL_SETTLEMENT_UPLOAD_RETRY_DELAY_MS,
+        nextAttempt: attemptNumber + 1,
+        attempts: DATA_INDIVIDUAL_SETTLEMENT_UPLOAD_ATTEMPTS,
+        queueNonce: jobData.queueNonce,
+        txHash: jobData.txHash,
+        walrusBlobId: jobData.walrusBlobId,
+      });
       await sleep(DATA_INDIVIDUAL_SETTLEMENT_UPLOAD_RETRY_DELAY_MS);
     }
   }
