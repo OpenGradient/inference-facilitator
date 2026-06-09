@@ -28,6 +28,7 @@ import {
   parseUint256Field,
   normalizeHeaderValue,
   PAYMENT_QUEUE_NAME,
+  parseInferenceUsageMetadata,
   parseSettlementJobDataFromHeaders,
   PORT,
   settlementStatusFromBullState,
@@ -38,9 +39,11 @@ import {
   type DataSettlementJobData,
   type HeartbeatRelayRequest,
   type IndividualDataSettlementJobData,
+  type InferenceUsageMetadata,
   type PaymentSettlementJobData,
   type SettlementApiJobResponse,
 } from "./all_networks_types_helpers.js";
+import { closeInferenceUsageTracker, getInferenceUsageStats } from "./all_networks_usage.js";
 import {
   type PaymentPayload,
   type PaymentRequirements,
@@ -188,6 +191,7 @@ async function toJobResponse(
 async function enqueuePaymentSettlementJob(args: {
   paymentPayload: PaymentPayload;
   paymentRequirements: PaymentRequirements;
+  usageMetadata?: InferenceUsageMetadata;
 }): Promise<SettlementApiJobResponse> {
   const paymentJobId = `payment-${randomUUID()}`;
   const paymentJob = await paymentQueue.add(
@@ -195,6 +199,7 @@ async function enqueuePaymentSettlementJob(args: {
     {
       paymentPayload: args.paymentPayload,
       paymentRequirements: args.paymentRequirements,
+      usageMetadata: args.usageMetadata,
     },
     {
       jobId: paymentJobId,
@@ -203,6 +208,7 @@ async function enqueuePaymentSettlementJob(args: {
 
   console.log("[api] Payment settlement job enqueued", {
     jobId: paymentJobId,
+    hasUsageMetadata: Boolean(args.usageMetadata),
     ...summarizePaymentRequirements(args.paymentRequirements),
     ...summarizePaymentPayload(args.paymentPayload),
   });
@@ -322,7 +328,10 @@ app.post("/settle", async (req, res) => {
       });
     }
 
+    const usageMetadata = parseInferenceUsageMetadata(req.body.usageMetadata);
+
     console.log("[api] /settle request received", {
+      hasUsageMetadata: Boolean(usageMetadata),
       ...summarizePaymentRequirements(paymentRequirements),
       ...summarizePaymentPayload(paymentPayload),
     });
@@ -331,6 +340,7 @@ app.post("/settle", async (req, res) => {
     const paymentJob = await enqueuePaymentSettlementJob({
       paymentPayload,
       paymentRequirements,
+      usageMetadata,
     });
     return res.status(202).json({ paymentJob });
   } catch (error) {
@@ -535,6 +545,20 @@ app.get("/health", (_req, res) => {
   });
 });
 
+app.get("/usage", async (req, res) => {
+  incrementMetric("api.request.count", ["route:/usage", "method:GET"]);
+  try {
+    const daysRaw = typeof req.query.days === "string" ? Number(req.query.days) : 30;
+    const days = Number.isInteger(daysRaw) ? Math.min(Math.max(daysRaw, 1), 90) : 30;
+    res.json(await getInferenceUsageStats(days));
+  } catch (error) {
+    console.error("[api] /usage request failed", summarizeError(error));
+    res.status(500).json({
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+});
+
 let httpServer: Server | null = null;
 let isShuttingDown = false;
 
@@ -562,6 +586,7 @@ async function shutdown(signal: string): Promise<void> {
     dataSettlementQueue.close(),
     individualDataSettlementQueue.close(),
     individualSettlementPreparer.close(),
+    closeInferenceUsageTracker(),
   ]);
 
   clearTimeout(forcedExitTimer);
