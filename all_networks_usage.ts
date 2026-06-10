@@ -10,10 +10,7 @@ const USAGE_OPG_DECIMALS = Number(process.env.USAGE_OPG_DECIMALS || 18);
 const USAGE_SUPABASE_ENABLED = process.env.USAGE_SUPABASE_ENABLED !== "false";
 const USAGE_SUPABASE_URL = process.env.USAGE_SUPABASE_URL || process.env.SUPABASE_URL || "";
 const USAGE_SUPABASE_SERVICE_ROLE_KEY =
-  process.env.USAGE_SUPABASE_SERVICE_ROLE_KEY ||
-  process.env.SUPABASE_SERVICE_ROLE_KEY ||
-  process.env.SUPABASE_ANON_KEY ||
-  "";
+  process.env.USAGE_SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const USAGE_SUPABASE_RPC = process.env.USAGE_SUPABASE_RPC || "record_ohttp_usage";
 
 let usageRedis: Redis | null = null;
@@ -66,11 +63,15 @@ function tagsForUsage(usage: InferenceUsageMetadata): string[] {
 }
 
 function opgAtomicToWholeUnits(costOpg: string): number {
-  const atomic = Number(costOpg);
-  if (!Number.isFinite(atomic)) {
+  try {
+    const atomic = BigInt(costOpg);
+    const decimals = Math.max(0, Math.trunc(USAGE_OPG_DECIMALS));
+    const scale = 10n ** BigInt(decimals);
+    const parsed = Number(atomic / scale) + Number(atomic % scale) / Number(scale);
+    return Number.isFinite(parsed) ? parsed : 0;
+  } catch {
     return 0;
   }
-  return atomic / 10 ** USAGE_OPG_DECIMALS;
 }
 
 async function claimUsageSink(
@@ -223,20 +224,38 @@ export async function getInferenceUsageStats(days = 30): Promise<{
 }> {
   const redis = getUsageRedis();
   const totalRaw = await redis.hgetall(`${USAGE_KEY_PREFIX}:totals`);
-  const daily: Array<{ day: string; requestCount: number; costOpg: string; costUsd: number }> = [];
+  const dailyKeys: Array<{ day: string; key: string }> = [];
 
   for (let offset = days - 1; offset >= 0; offset -= 1) {
     const date = new Date();
     date.setUTCDate(date.getUTCDate() - offset);
     const day = utcDay(date);
-    const raw = await redis.hgetall(`${USAGE_KEY_PREFIX}:daily:${day}`);
-    daily.push({
-      day,
-      requestCount: Number(raw.request_count || 0),
-      costOpg: raw.cost_opg || "0",
-      costUsd: Number(raw.cost_usd || 0),
-    });
+    dailyKeys.push({ day, key: `${USAGE_KEY_PREFIX}:daily:${day}` });
   }
+
+  const pipeline = redis.pipeline();
+  for (const { key } of dailyKeys) {
+    pipeline.hgetall(key);
+  }
+  const dailyResults = await pipeline.exec();
+  if (!dailyResults) {
+    throw new Error("Redis usage stats pipeline failed");
+  }
+
+  const daily = dailyResults.map(([error, raw], index) => {
+    if (error) {
+      throw error;
+    }
+
+    const day = dailyKeys[index]?.day ?? utcDay();
+    const record = (raw ?? {}) as Record<string, string>;
+    return {
+      day,
+      requestCount: Number(record.request_count || 0),
+      costOpg: record.cost_opg || "0",
+      costUsd: Number(record.cost_usd || 0),
+    };
+  });
 
   return {
     totalRequests: Number(totalRaw.request_count || 0),

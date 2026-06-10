@@ -328,7 +328,14 @@ app.post("/settle", async (req, res) => {
       });
     }
 
-    const usageMetadata = parseInferenceUsageMetadata(req.body.usageMetadata);
+    let usageMetadata: InferenceUsageMetadata | undefined;
+    try {
+      usageMetadata = parseInferenceUsageMetadata(req.body.usageMetadata);
+    } catch (error) {
+      return res.status(400).json({
+        error: error instanceof Error ? error.message : "Invalid usageMetadata",
+      });
+    }
 
     console.log("[api] /settle request received", {
       hasUsageMetadata: Boolean(usageMetadata),

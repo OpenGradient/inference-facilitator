@@ -287,7 +287,7 @@ export function parseUint256Field(record: Record<string, unknown>, fieldNames: s
   const raw = getRequiredUnknownField(record, fieldNames);
 
   if (typeof raw === "number") {
-    if (!Number.isInteger(raw) || raw < 0) {
+    if (!Number.isSafeInteger(raw) || raw < 0) {
       throw new Error(
         `Invalid uint256 field. Expected non-negative integer for: ${fieldNames.join(", ")}`,
       );
@@ -321,6 +321,23 @@ export function parseUint256Field(record: Record<string, unknown>, fieldNames: s
   return trimmed;
 }
 
+function getOptionalUint256Field(
+  record: Record<string, unknown>,
+  fieldNames: string[],
+  label: string,
+): string | undefined {
+  const fieldName = fieldNames.find(name => name in record);
+  if (!fieldName) {
+    return undefined;
+  }
+
+  try {
+    return parseUint256Field(record, [fieldName]);
+  } catch {
+    throw new Error(`${label} must be a non-negative integer string`);
+  }
+}
+
 export function parseInferenceUsageMetadata(value: unknown): InferenceUsageMetadata | undefined {
   if (value === undefined || value === null) {
     return undefined;
@@ -332,17 +349,13 @@ export function parseInferenceUsageMetadata(value: unknown): InferenceUsageMetad
   const requestCount = getOptionalNumberField(value, ["requestCount", "request_count"]) ?? 0;
   const costUsd = getOptionalNumberField(value, ["costUsd", "cost_usd"]) ?? 0;
   const costOpg =
-    getOptionalStringField(value, ["costOpg", "cost_opg"]) ??
-    String(getOptionalNumberField(value, ["costOpg", "cost_opg"]) ?? 0);
+    getOptionalUint256Field(value, ["costOpg", "cost_opg"], "usageMetadata.costOpg") ?? "0";
 
-  if (!Number.isInteger(requestCount) || requestCount < 0) {
+  if (!Number.isSafeInteger(requestCount) || requestCount < 0) {
     throw new Error("usageMetadata.requestCount must be a non-negative integer");
   }
   if (!Number.isFinite(costUsd) || costUsd < 0) {
     throw new Error("usageMetadata.costUsd must be a non-negative number");
-  }
-  if (!/^[0-9]+$/.test(costOpg)) {
-    throw new Error("usageMetadata.costOpg must be a non-negative integer string");
   }
 
   return {

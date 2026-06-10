@@ -47,7 +47,15 @@ const worker = new Worker<PaymentSettlementJobData>(
       }
 
       try {
-        await recordInferenceUsage(job.data.usageMetadata);
+        await recordInferenceUsage(
+          job.data.usageMetadata
+            ? {
+                ...job.data.usageMetadata,
+                sessionId:
+                  job.data.usageMetadata.sessionId ?? (job.id ? String(job.id) : undefined),
+              }
+            : undefined,
+        );
       } catch (error) {
         console.error("[payment-worker] Failed to record inference usage", {
           jobId: job.id,
