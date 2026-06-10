@@ -29,10 +29,9 @@ function utcDay(date = new Date()): string {
 
 function usageDedupeKey(usage: InferenceUsageMetadata): string {
   const source =
-    usage.sessionId ||
-    createHash("sha256")
-      .update(
-        JSON.stringify({
+    usage.sessionId !== undefined
+      ? `session:${usage.sessionId}`
+      : `usage:${JSON.stringify({
           requestCount: usage.requestCount,
           costOpg: usage.costOpg,
           costUsd: usage.costUsd,
@@ -42,11 +41,10 @@ function usageDedupeKey(usage: InferenceUsageMetadata): string {
           model: usage.model,
           network: usage.network,
           asset: usage.asset,
-        }),
-      )
-      .digest("hex");
+        })}`;
+  const digest = createHash("sha256").update(source).digest("hex");
 
-  return `${USAGE_KEY_PREFIX}:session:${source}`;
+  return `${USAGE_KEY_PREFIX}:session:${digest}`;
 }
 
 function usageSinkDedupeKey(usage: InferenceUsageMetadata, sink: "redis" | "supabase"): string {
@@ -60,6 +58,14 @@ function tagsForUsage(usage: InferenceUsageMetadata): string[] {
     usage.network ? `network:${usage.network}` : "network:unknown",
     usage.asset ? `asset:${usage.asset}` : "asset:unknown",
   ];
+}
+
+function isZeroAtomicOpg(costOpg: string): boolean {
+  try {
+    return BigInt(costOpg) === 0n;
+  } catch {
+    return true;
+  }
 }
 
 function opgAtomicToWholeUnits(costOpg: string): number {
@@ -107,6 +113,7 @@ async function recordInferenceUsageInRedis(
     multi.hincrbyfloat(dailyKey, "cost_opg", costOpg);
     multi.hincrbyfloat(dailyKey, "cost_usd", usage.costUsd);
     multi.hset(dailyKey, "day", day);
+    multi.expire(dailyKey, USAGE_DEDUPE_TTL_SECONDS);
     multi.hincrby(totalsKey, "request_count", usage.requestCount);
     multi.hincrbyfloat(totalsKey, "cost_opg", costOpg);
     multi.hincrbyfloat(totalsKey, "cost_usd", usage.costUsd);
@@ -182,7 +189,10 @@ async function recordInferenceUsageInSupabase(
 export async function recordInferenceUsage(
   usage: InferenceUsageMetadata | undefined,
 ): Promise<boolean> {
-  if (!usage || (usage.requestCount === 0 && usage.costOpg === "0" && usage.costUsd === 0)) {
+  if (
+    !usage ||
+    (usage.requestCount === 0 && isZeroAtomicOpg(usage.costOpg) && usage.costUsd === 0)
+  ) {
     return false;
   }
 
@@ -190,17 +200,32 @@ export async function recordInferenceUsage(
   const tags = tagsForUsage(usage);
   const costOpg = opgAtomicToWholeUnits(usage.costOpg);
 
-  const [redisRecorded, supabaseRecorded] = await Promise.all([
+  const [redisResult, supabaseResult] = await Promise.allSettled([
     recordInferenceUsageInRedis(redis, usage, costOpg),
     recordInferenceUsageInSupabase(redis, usage, costOpg),
   ]);
+  if (redisResult.status === "rejected") {
+    console.error("[usage] Redis usage sink failed", { error: redisResult.reason });
+    incrementMetric("inference_usage.redis.error.count", tags);
+  }
+  if (supabaseResult.status === "rejected") {
+    console.error("[usage] Supabase usage sink failed", { error: supabaseResult.reason });
+    incrementMetric("inference_usage.supabase.error.count", tags);
+  }
+  const redisRecorded = redisResult.status === "fulfilled" && redisResult.value;
+  const supabaseRecorded = supabaseResult.status === "fulfilled" && supabaseResult.value;
+  const recorded = redisRecorded || supabaseRecorded;
+
+  if (!recorded) {
+    return false;
+  }
 
   incrementMetric("inference_usage.request.count", tags, usage.requestCount);
   incrementMetric("inference_usage.cost_opg", tags, costOpg);
   incrementMetric("inference_usage.cost_usd", tags, usage.costUsd);
 
   console.log("[usage] Recorded inference session usage", {
-    sessionId: usage.sessionId,
+    hasSessionId: Boolean(usage.sessionId),
     requestCount: usage.requestCount,
     costOpg: usage.costOpg,
     costUsd: usage.costUsd,
@@ -213,7 +238,7 @@ export async function recordInferenceUsage(
     supabaseRecorded,
   });
 
-  return redisRecorded || supabaseRecorded;
+  return true;
 }
 
 export async function getInferenceUsageStats(days = 30): Promise<{
