@@ -226,6 +226,7 @@ export async function recordInferenceUsage(
 
   console.log("[usage] Recorded inference session usage", {
     hasSessionId: Boolean(usage.sessionId),
+    sessionId: usage.sessionId,
     requestCount: usage.requestCount,
     costOpg: usage.costOpg,
     costUsd: usage.costUsd,
