@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { Redis } from "ioredis";
+import { getAddress, isAddress } from "viem";
 import { createBullMqConnection } from "./all_networks_shared.js";
 import { incrementMetric } from "./metrics.js";
 import { type InferenceUsageMetadata } from "./all_networks_types_helpers.js";
@@ -12,9 +13,71 @@ const USAGE_SUPABASE_URL = process.env.USAGE_SUPABASE_URL || process.env.SUPABAS
 const USAGE_SUPABASE_SERVICE_ROLE_KEY =
   process.env.USAGE_SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const USAGE_SUPABASE_RPC = process.env.USAGE_SUPABASE_RPC || "record_ohttp_usage";
+const USAGE_SUPABASE_PER_APP_RPC =
+  process.env.USAGE_SUPABASE_PER_APP_RPC || "record_ohttp_usage_per_app";
+const USAGE_DEFAULT_APP_ID = process.env.USAGE_DEFAULT_APP_ID || "other";
 
 let usageRedis: Redis | null = null;
 let supabaseConfigWarningLogged = false;
+
+function normalizeAddress(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed || !isAddress(trimmed)) {
+    return null;
+  }
+  return getAddress(trimmed).toLowerCase();
+}
+
+function setPayerServiceMapping(
+  map: Map<string, string>,
+  address: string | undefined,
+  appId: string,
+): void {
+  const normalized = normalizeAddress(address);
+  if (!normalized) {
+    if (address?.trim()) {
+      console.warn("[usage] Ignoring invalid payer wallet mapping", { appId });
+    }
+    return;
+  }
+  map.set(normalized, appId);
+}
+
+function loadPayerServiceMap(): Map<string, string> {
+  const map = new Map<string, string>();
+
+  setPayerServiceMapping(
+    map,
+    process.env.USAGE_CHAT_API_PAYER_WALLET || process.env.CHAT_API_PAYER_WALLET,
+    "opengradient-chat",
+  );
+  setPayerServiceMapping(
+    map,
+    process.env.USAGE_BITQUANT_PAYER_WALLET || process.env.BITQUANT_PAYER_WALLET,
+    "bitquant",
+  );
+
+  const rawMap = process.env.USAGE_PAYER_SERVICE_MAP;
+  if (rawMap?.trim()) {
+    try {
+      const parsed = JSON.parse(rawMap) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("expected object mapping payer wallet to app id");
+      }
+      for (const [address, appId] of Object.entries(parsed as Record<string, unknown>)) {
+        if (typeof appId === "string" && appId.trim()) {
+          setPayerServiceMapping(map, address, appId.trim());
+        }
+      }
+    } catch (error) {
+      console.warn("[usage] Ignoring invalid USAGE_PAYER_SERVICE_MAP", { error });
+    }
+  }
+
+  return map;
+}
+
+const USAGE_PAYER_SERVICE_MAP = loadPayerServiceMap();
 
 function getUsageRedis(): Redis {
   if (!usageRedis) {
@@ -47,7 +110,9 @@ function usageDedupeKey(usage: InferenceUsageMetadata): string {
   return `${USAGE_KEY_PREFIX}:session:${digest}`;
 }
 
-function usageSinkDedupeKey(usage: InferenceUsageMetadata, sink: "redis" | "supabase"): string {
+type UsageSink = "redis" | "supabase" | "supabase_per_app";
+
+function usageSinkDedupeKey(usage: InferenceUsageMetadata, sink: UsageSink): string {
   return `${usageDedupeKey(usage)}:${sink}`;
 }
 
@@ -83,7 +148,7 @@ function opgAtomicToWholeUnits(costOpg: string): number {
 async function claimUsageSink(
   redis: Redis,
   usage: InferenceUsageMetadata,
-  sink: "redis" | "supabase",
+  sink: UsageSink,
 ): Promise<string | null> {
   const dedupeKey = usageSinkDedupeKey(usage, sink);
   const claimed = await redis.set(dedupeKey, "1", "EX", USAGE_DEDUPE_TTL_SECONDS, "NX");
@@ -126,7 +191,7 @@ async function recordInferenceUsageInRedis(
   return true;
 }
 
-function getSupabaseRpcUrl(): string | null {
+function getSupabaseRpcUrl(rpcName: string): string | null {
   if (!USAGE_SUPABASE_ENABLED) {
     return null;
   }
@@ -139,7 +204,7 @@ function getSupabaseRpcUrl(): string | null {
     }
     return null;
   }
-  return `${USAGE_SUPABASE_URL.replace(/\/$/, "")}/rest/v1/rpc/${USAGE_SUPABASE_RPC}`;
+  return `${USAGE_SUPABASE_URL.replace(/\/$/, "")}/rest/v1/rpc/${rpcName}`;
 }
 
 async function recordInferenceUsageInSupabase(
@@ -147,7 +212,7 @@ async function recordInferenceUsageInSupabase(
   usage: InferenceUsageMetadata,
   costOpg: number,
 ): Promise<boolean> {
-  const rpcUrl = getSupabaseRpcUrl();
+  const rpcUrl = getSupabaseRpcUrl(USAGE_SUPABASE_RPC);
   if (!rpcUrl) {
     return false;
   }
@@ -186,9 +251,68 @@ async function recordInferenceUsageInSupabase(
   return true;
 }
 
-export async function recordInferenceUsage(
-  usage: InferenceUsageMetadata | undefined,
+async function recordInferenceUsagePerAppInSupabase(
+  redis: Redis,
+  usage: InferenceUsageMetadata,
+  costOpg: number,
 ): Promise<boolean> {
+  const rpcUrl = getSupabaseRpcUrl(USAGE_SUPABASE_PER_APP_RPC);
+  if (!rpcUrl) {
+    return false;
+  }
+
+  const dedupeKey = await claimUsageSink(redis, usage, "supabase_per_app");
+  if (!dedupeKey) {
+    return false;
+  }
+
+  const body = {
+    p_app_id: usage.service || USAGE_DEFAULT_APP_ID,
+    p_request_count: usage.requestCount,
+    p_cost_usd: usage.costUsd,
+    p_cost_opg: costOpg,
+  };
+
+  try {
+    const response = await fetch(rpcUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: USAGE_SUPABASE_SERVICE_ROLE_KEY,
+        Authorization: `Bearer ${USAGE_SUPABASE_SERVICE_ROLE_KEY}`,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        `Supabase per-app usage RPC failed (${response.status}): ${await response.text()}`,
+      );
+    }
+  } catch (error) {
+    await redis.del(dedupeKey);
+    throw error;
+  }
+
+  incrementMetric("inference_usage.supabase_per_app.recorded.count", tagsForUsage(usage));
+  return true;
+}
+
+export async function recordInferenceUsage(
+  rawUsage: InferenceUsageMetadata | undefined,
+  payerAddress?: string,
+): Promise<boolean> {
+  const normalizedPayer = normalizeAddress(payerAddress);
+  const appId = normalizedPayer
+    ? (USAGE_PAYER_SERVICE_MAP.get(normalizedPayer) ?? USAGE_DEFAULT_APP_ID)
+    : USAGE_DEFAULT_APP_ID;
+  const usage = rawUsage
+    ? {
+        ...rawUsage,
+        service: appId,
+      }
+    : rawUsage;
+
   if (
     !usage ||
     (usage.requestCount === 0 && isZeroAtomicOpg(usage.costOpg) && usage.costUsd === 0)
@@ -200,9 +324,10 @@ export async function recordInferenceUsage(
   const tags = tagsForUsage(usage);
   const costOpg = opgAtomicToWholeUnits(usage.costOpg);
 
-  const [redisResult, supabaseResult] = await Promise.allSettled([
+  const [redisResult, supabaseResult, perAppResult] = await Promise.allSettled([
     recordInferenceUsageInRedis(redis, usage, costOpg),
     recordInferenceUsageInSupabase(redis, usage, costOpg),
+    recordInferenceUsagePerAppInSupabase(redis, usage, costOpg),
   ]);
   if (redisResult.status === "rejected") {
     console.error("[usage] Redis usage sink failed", { error: redisResult.reason });
@@ -212,9 +337,14 @@ export async function recordInferenceUsage(
     console.error("[usage] Supabase usage sink failed", { error: supabaseResult.reason });
     incrementMetric("inference_usage.supabase.error.count", tags);
   }
+  if (perAppResult.status === "rejected") {
+    console.error("[usage] Supabase per-app usage sink failed", { error: perAppResult.reason });
+    incrementMetric("inference_usage.supabase_per_app.error.count", tags);
+  }
   const redisRecorded = redisResult.status === "fulfilled" && redisResult.value;
   const supabaseRecorded = supabaseResult.status === "fulfilled" && supabaseResult.value;
-  const recorded = redisRecorded || supabaseRecorded;
+  const supabasePerAppRecorded = perAppResult.status === "fulfilled" && perAppResult.value;
+  const recorded = redisRecorded || supabaseRecorded || supabasePerAppRecorded;
 
   if (!recorded) {
     return false;
@@ -230,6 +360,8 @@ export async function recordInferenceUsage(
     requestCount: usage.requestCount,
     costOpg: usage.costOpg,
     costUsd: usage.costUsd,
+    payerAddress: normalizedPayer,
+    appId,
     service: usage.service,
     path: usage.path,
     model: usage.model,
@@ -237,6 +369,7 @@ export async function recordInferenceUsage(
     asset: usage.asset,
     redisRecorded,
     supabaseRecorded,
+    supabasePerAppRecorded,
   });
 
   return true;
