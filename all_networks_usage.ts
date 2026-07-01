@@ -16,6 +16,15 @@ const USAGE_SUPABASE_RPC = process.env.USAGE_SUPABASE_RPC || "record_ohttp_usage
 const USAGE_SUPABASE_PER_APP_RPC =
   process.env.USAGE_SUPABASE_PER_APP_RPC || "record_ohttp_usage_per_app";
 const USAGE_DEFAULT_APP_ID = process.env.USAGE_DEFAULT_APP_ID || "other";
+const USAGE_SUPABASE_TOKEN_FIELDS_ENABLED =
+  process.env.USAGE_SUPABASE_TOKEN_FIELDS_ENABLED !== "false";
+const USAGE_SUPABASE_PER_APP_TOKEN_FIELDS_ENABLED =
+  process.env.USAGE_SUPABASE_PER_APP_TOKEN_FIELDS_ENABLED === "true";
+const USAGE_SUPABASE_INPUT_TOKENS_PARAM =
+  process.env.USAGE_SUPABASE_INPUT_TOKENS_PARAM || "p_total_input_tokens";
+const USAGE_SUPABASE_OUTPUT_TOKENS_PARAM =
+  process.env.USAGE_SUPABASE_OUTPUT_TOKENS_PARAM || "p_total_output_tokens";
+const USAGE_SUPABASE_TOTAL_TOKENS_PARAM = process.env.USAGE_SUPABASE_TOTAL_TOKENS_PARAM || "";
 
 let usageRedis: Redis | null = null;
 let supabaseConfigWarningLogged = false;
@@ -104,6 +113,9 @@ function usageDedupeKey(usage: InferenceUsageMetadata): string {
           model: usage.model,
           network: usage.network,
           asset: usage.asset,
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          totalTokens: usage.totalTokens,
         })}`;
   const digest = createHash("sha256").update(source).digest("hex");
 
@@ -177,11 +189,17 @@ async function recordInferenceUsageInRedis(
     multi.hincrby(dailyKey, "request_count", usage.requestCount);
     multi.hincrbyfloat(dailyKey, "cost_opg", costOpg);
     multi.hincrbyfloat(dailyKey, "cost_usd", usage.costUsd);
+    multi.hincrby(dailyKey, "total_input_tokens", usage.inputTokens ?? 0);
+    multi.hincrby(dailyKey, "total_output_tokens", usage.outputTokens ?? 0);
+    multi.hincrby(dailyKey, "total_tokens", usage.totalTokens ?? 0);
     multi.hset(dailyKey, "day", day);
     multi.expire(dailyKey, USAGE_DEDUPE_TTL_SECONDS);
     multi.hincrby(totalsKey, "request_count", usage.requestCount);
     multi.hincrbyfloat(totalsKey, "cost_opg", costOpg);
     multi.hincrbyfloat(totalsKey, "cost_usd", usage.costUsd);
+    multi.hincrby(totalsKey, "total_input_tokens", usage.inputTokens ?? 0);
+    multi.hincrby(totalsKey, "total_output_tokens", usage.outputTokens ?? 0);
+    multi.hincrby(totalsKey, "total_tokens", usage.totalTokens ?? 0);
     await multi.exec();
   } catch (error) {
     await redis.del(dedupeKey);
@@ -207,6 +225,28 @@ function getSupabaseRpcUrl(rpcName: string): string | null {
   return `${USAGE_SUPABASE_URL.replace(/\/$/, "")}/rest/v1/rpc/${rpcName}`;
 }
 
+function addTokenFieldsToSupabaseBody(
+  body: Record<string, string | number>,
+  usage: InferenceUsageMetadata,
+  enabled: boolean,
+): Record<string, string | number> {
+  if (!enabled) {
+    return body;
+  }
+
+  const bodyWithTokens = {
+    ...body,
+    [USAGE_SUPABASE_INPUT_TOKENS_PARAM]: usage.inputTokens ?? 0,
+    [USAGE_SUPABASE_OUTPUT_TOKENS_PARAM]: usage.outputTokens ?? 0,
+  };
+
+  if (USAGE_SUPABASE_TOTAL_TOKENS_PARAM) {
+    bodyWithTokens[USAGE_SUPABASE_TOTAL_TOKENS_PARAM] = usage.totalTokens ?? 0;
+  }
+
+  return bodyWithTokens;
+}
+
 async function recordInferenceUsageInSupabase(
   redis: Redis,
   usage: InferenceUsageMetadata,
@@ -222,11 +262,15 @@ async function recordInferenceUsageInSupabase(
     return false;
   }
 
-  const body = {
-    p_request_count: usage.requestCount,
-    p_cost_usd: usage.costUsd,
-    p_cost_opg: costOpg,
-  };
+  const body = addTokenFieldsToSupabaseBody(
+    {
+      p_request_count: usage.requestCount,
+      p_cost_usd: usage.costUsd,
+      p_cost_opg: costOpg,
+    },
+    usage,
+    USAGE_SUPABASE_TOKEN_FIELDS_ENABLED,
+  );
 
   try {
     const response = await fetch(rpcUrl, {
@@ -266,12 +310,16 @@ async function recordInferenceUsagePerAppInSupabase(
     return false;
   }
 
-  const body = {
-    p_app_id: usage.service || USAGE_DEFAULT_APP_ID,
-    p_request_count: usage.requestCount,
-    p_cost_usd: usage.costUsd,
-    p_cost_opg: costOpg,
-  };
+  const body = addTokenFieldsToSupabaseBody(
+    {
+      p_app_id: usage.service || USAGE_DEFAULT_APP_ID,
+      p_request_count: usage.requestCount,
+      p_cost_usd: usage.costUsd,
+      p_cost_opg: costOpg,
+    },
+    usage,
+    USAGE_SUPABASE_PER_APP_TOKEN_FIELDS_ENABLED,
+  );
 
   try {
     const response = await fetch(rpcUrl, {
@@ -315,7 +363,12 @@ export async function recordInferenceUsage(
 
   if (
     !usage ||
-    (usage.requestCount === 0 && isZeroAtomicOpg(usage.costOpg) && usage.costUsd === 0)
+    (usage.requestCount === 0 &&
+      isZeroAtomicOpg(usage.costOpg) &&
+      usage.costUsd === 0 &&
+      (usage.inputTokens ?? 0) === 0 &&
+      (usage.outputTokens ?? 0) === 0 &&
+      (usage.totalTokens ?? 0) === 0)
   ) {
     return false;
   }
@@ -353,6 +406,9 @@ export async function recordInferenceUsage(
   incrementMetric("inference_usage.request.count", tags, usage.requestCount);
   incrementMetric("inference_usage.cost_opg", tags, costOpg);
   incrementMetric("inference_usage.cost_usd", tags, usage.costUsd);
+  incrementMetric("inference_usage.input_tokens", tags, usage.inputTokens ?? 0);
+  incrementMetric("inference_usage.output_tokens", tags, usage.outputTokens ?? 0);
+  incrementMetric("inference_usage.total_tokens", tags, usage.totalTokens ?? 0);
 
   console.log("[usage] Recorded inference session usage", {
     hasSessionId: Boolean(usage.sessionId),
@@ -360,6 +416,9 @@ export async function recordInferenceUsage(
     requestCount: usage.requestCount,
     costOpg: usage.costOpg,
     costUsd: usage.costUsd,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    totalTokens: usage.totalTokens,
     payerAddress: normalizedPayer,
     appId,
     service: usage.service,
@@ -379,7 +438,18 @@ export async function getInferenceUsageStats(days = 30): Promise<{
   totalRequests: number;
   totalCostOpg: string;
   totalCostUsd: number;
-  daily: Array<{ day: string; requestCount: number; costOpg: string; costUsd: number }>;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalTokens: number;
+  daily: Array<{
+    day: string;
+    requestCount: number;
+    costOpg: string;
+    costUsd: number;
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+  }>;
 }> {
   const redis = getUsageRedis();
   const totalRaw = await redis.hgetall(`${USAGE_KEY_PREFIX}:totals`);
@@ -413,6 +483,9 @@ export async function getInferenceUsageStats(days = 30): Promise<{
       requestCount: Number(record.request_count || 0),
       costOpg: record.cost_opg || "0",
       costUsd: Number(record.cost_usd || 0),
+      inputTokens: Number(record.total_input_tokens || 0),
+      outputTokens: Number(record.total_output_tokens || 0),
+      totalTokens: Number(record.total_tokens || 0),
     };
   });
 
@@ -420,6 +493,9 @@ export async function getInferenceUsageStats(days = 30): Promise<{
     totalRequests: Number(totalRaw.request_count || 0),
     totalCostOpg: totalRaw.cost_opg || "0",
     totalCostUsd: Number(totalRaw.cost_usd || 0),
+    totalInputTokens: Number(totalRaw.total_input_tokens || 0),
+    totalOutputTokens: Number(totalRaw.total_output_tokens || 0),
+    totalTokens: Number(totalRaw.total_tokens || 0),
     daily,
   };
 }

@@ -138,6 +138,9 @@ export type InferenceUsageMetadata = {
   requestCount: number;
   costOpg: string;
   costUsd: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
   service?: string;
   method?: string;
   path?: string;
@@ -245,6 +248,21 @@ function getOptionalNumberField(
   return undefined;
 }
 
+function getOptionalIntegerField(
+  record: Record<string, unknown>,
+  fieldNames: string[],
+  label: string,
+): number | undefined {
+  const value = getOptionalNumberField(record, fieldNames);
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${label} must be a non-negative integer`);
+  }
+  return value;
+}
+
 function getOptionalBooleanField(
   record: Record<string, unknown>,
   fieldNames: string[],
@@ -350,6 +368,35 @@ export function parseInferenceUsageMetadata(value: unknown): InferenceUsageMetad
   const costUsd = getOptionalNumberField(value, ["costUsd", "cost_usd"]) ?? 0;
   const costOpg =
     getOptionalUint256Field(value, ["costOpg", "cost_opg"], "usageMetadata.costOpg") ?? "0";
+  const inputTokens = getOptionalIntegerField(
+    value,
+    [
+      "inputTokens",
+      "input_tokens",
+      "promptTokens",
+      "prompt_tokens",
+      "totalInputTokens",
+      "total_input_tokens",
+    ],
+    "usageMetadata.inputTokens",
+  );
+  const outputTokens = getOptionalIntegerField(
+    value,
+    [
+      "outputTokens",
+      "output_tokens",
+      "completionTokens",
+      "completion_tokens",
+      "totalOutputTokens",
+      "total_output_tokens",
+    ],
+    "usageMetadata.outputTokens",
+  );
+  const totalTokens = getOptionalIntegerField(
+    value,
+    ["totalTokens", "total_tokens"],
+    "usageMetadata.totalTokens",
+  );
 
   if (!Number.isSafeInteger(requestCount) || requestCount < 0) {
     throw new Error("usageMetadata.requestCount must be a non-negative integer");
@@ -363,6 +410,9 @@ export function parseInferenceUsageMetadata(value: unknown): InferenceUsageMetad
     requestCount,
     costOpg,
     costUsd,
+    inputTokens,
+    outputTokens,
+    totalTokens,
     service: getOptionalStringField(value, ["service"]),
     method: getOptionalStringField(value, ["method"]),
     path: getOptionalStringField(value, ["path", "route"]),
