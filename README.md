@@ -58,6 +58,13 @@ SETTLEMENT_BATCH_SIZE=20
 SETTLEMENT_BATCH_TIMEOUT=60000
 WALRUS_PUBLISHER_URL=http://localhost:9002/v1/blobs
 
+# Optional: Push aggregate inference usage to the same Supabase RPC/table as chat API
+USAGE_SUPABASE_URL=https://your-project.supabase.co
+USAGE_SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+USAGE_SUPABASE_RPC=record_ohttp_usage
+# Set to false to disable the Supabase sink while keeping Redis usage rollups
+USAGE_SUPABASE_ENABLED=true
+
 # Optional: Individual settlement queue/signing
 DATA_SETTLEMENT_INDIVIDUAL_QUEUE_NAME=x402-settle-data-individual-queue-v1
 DATA_INDIVIDUAL_WORKER_EVM_PRIVATE_KEY=0xDedicatedIndividualSettlementKey

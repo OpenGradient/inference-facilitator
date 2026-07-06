@@ -94,6 +94,9 @@ const DATA_WORKER_TX_RECEIPT_TIMEOUT_MS = Number(
   process.env.DATA_WORKER_TX_RECEIPT_TIMEOUT_MS || 120_000,
 );
 const BASE_MAINNET_RPC_URL = process.env.BASE_MAINNET_RPC_URL;
+const PAYMENT_WORKER_BASE_MAX_FEE_GWEI = process.env.PAYMENT_WORKER_BASE_MAX_FEE_GWEI || "0.10";
+const PAYMENT_WORKER_BASE_MAX_PRIORITY_FEE_GWEI =
+  process.env.PAYMENT_WORKER_BASE_MAX_PRIORITY_FEE_GWEI || "0.02";
 const HEARTBEAT_RELAY_GAS_LIMIT = BigInt(process.env.HEARTBEAT_RELAY_GAS_LIMIT || "500000");
 const HEARTBEAT_RELAY_TX_RECEIPT_TIMEOUT_MS = Number(
   process.env.HEARTBEAT_RELAY_TX_RECEIPT_TIMEOUT_MS || 120_000,
@@ -1360,8 +1363,8 @@ export async function createFacilitator(): Promise<x402Facilitator> {
           ...args,
           args: args.args || [],
           gas: 5_000_000n,
-          maxFeePerGas: parseGwei("0.006"),
-          maxPriorityFeePerGas: parseGwei("0.005"),
+          maxFeePerGas: parseGwei(PAYMENT_WORKER_BASE_MAX_FEE_GWEI),
+          maxPriorityFeePerGas: parseGwei(PAYMENT_WORKER_BASE_MAX_PRIORITY_FEE_GWEI),
         }),
       sendTransaction: (args: { to: `0x${string}`; data: `0x${string}` }) =>
         baseViemClient.sendTransaction({

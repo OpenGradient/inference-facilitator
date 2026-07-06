@@ -130,6 +130,25 @@ export type SettlementHandlerResult = {
 export type PaymentSettlementJobData = {
   paymentPayload: PaymentPayload;
   paymentRequirements: PaymentRequirements;
+  usageMetadata?: InferenceUsageMetadata;
+};
+
+export type InferenceUsageMetadata = {
+  sessionId?: string;
+  requestCount: number;
+  costOpg: string;
+  costUsd: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  service?: string;
+  method?: string;
+  path?: string;
+  model?: string;
+  settlementType?: SettlementType | string;
+  network?: string;
+  asset?: string;
+  isStreaming?: boolean;
 };
 
 export type DataWorkerContext = {
@@ -197,6 +216,66 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+function getOptionalStringField(
+  record: Record<string, unknown>,
+  fieldNames: string[],
+): string | undefined {
+  for (const name of fieldNames) {
+    const value = record[name];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
+function getOptionalNumberField(
+  record: Record<string, unknown>,
+  fieldNames: string[],
+): number | undefined {
+  for (const name of fieldNames) {
+    const value = record[name];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === "string" && value.trim().length > 0) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+  return undefined;
+}
+
+function getOptionalIntegerField(
+  record: Record<string, unknown>,
+  fieldNames: string[],
+  label: string,
+): number | undefined {
+  const value = getOptionalNumberField(record, fieldNames);
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${label} must be a non-negative integer`);
+  }
+  return value;
+}
+
+function getOptionalBooleanField(
+  record: Record<string, unknown>,
+  fieldNames: string[],
+): boolean | undefined {
+  for (const name of fieldNames) {
+    const value = record[name];
+    if (typeof value === "boolean") {
+      return value;
+    }
+  }
+  return undefined;
+}
+
 export function getRequiredStringField(
   record: Record<string, unknown>,
   fieldNames: string[],
@@ -226,7 +305,7 @@ export function parseUint256Field(record: Record<string, unknown>, fieldNames: s
   const raw = getRequiredUnknownField(record, fieldNames);
 
   if (typeof raw === "number") {
-    if (!Number.isInteger(raw) || raw < 0) {
+    if (!Number.isSafeInteger(raw) || raw < 0) {
       throw new Error(
         `Invalid uint256 field. Expected non-negative integer for: ${fieldNames.join(", ")}`,
       );
@@ -258,6 +337,91 @@ export function parseUint256Field(record: Record<string, unknown>, fieldNames: s
   }
 
   return trimmed;
+}
+
+function getOptionalUint256Field(
+  record: Record<string, unknown>,
+  fieldNames: string[],
+  label: string,
+): string | undefined {
+  const fieldName = fieldNames.find(name => name in record);
+  if (!fieldName) {
+    return undefined;
+  }
+
+  try {
+    return parseUint256Field(record, [fieldName]);
+  } catch {
+    throw new Error(`${label} must be a non-negative integer string`);
+  }
+}
+
+export function parseInferenceUsageMetadata(value: unknown): InferenceUsageMetadata | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (!isRecord(value)) {
+    throw new Error("usageMetadata must be a JSON object");
+  }
+
+  const requestCount = getOptionalNumberField(value, ["requestCount", "request_count"]) ?? 0;
+  const costUsd = getOptionalNumberField(value, ["costUsd", "cost_usd"]) ?? 0;
+  const costOpg =
+    getOptionalUint256Field(value, ["costOpg", "cost_opg"], "usageMetadata.costOpg") ?? "0";
+  const inputTokens = getOptionalIntegerField(
+    value,
+    [
+      "inputTokens",
+      "input_tokens",
+      "promptTokens",
+      "prompt_tokens",
+      "totalInputTokens",
+      "total_input_tokens",
+    ],
+    "usageMetadata.inputTokens",
+  );
+  const outputTokens = getOptionalIntegerField(
+    value,
+    [
+      "outputTokens",
+      "output_tokens",
+      "completionTokens",
+      "completion_tokens",
+      "totalOutputTokens",
+      "total_output_tokens",
+    ],
+    "usageMetadata.outputTokens",
+  );
+  const totalTokens = getOptionalIntegerField(
+    value,
+    ["totalTokens", "total_tokens"],
+    "usageMetadata.totalTokens",
+  );
+
+  if (!Number.isSafeInteger(requestCount) || requestCount < 0) {
+    throw new Error("usageMetadata.requestCount must be a non-negative integer");
+  }
+  if (!Number.isFinite(costUsd) || costUsd < 0) {
+    throw new Error("usageMetadata.costUsd must be a non-negative number");
+  }
+
+  return {
+    sessionId: getOptionalStringField(value, ["sessionId", "session_id"]),
+    requestCount,
+    costOpg,
+    costUsd,
+    inputTokens,
+    outputTokens,
+    totalTokens,
+    service: getOptionalStringField(value, ["service"]),
+    method: getOptionalStringField(value, ["method"]),
+    path: getOptionalStringField(value, ["path", "route"]),
+    model: getOptionalStringField(value, ["model"]),
+    settlementType: getOptionalStringField(value, ["settlementType", "settlement_type"]),
+    network: getOptionalStringField(value, ["network"]),
+    asset: getOptionalStringField(value, ["asset"]),
+    isStreaming: getOptionalBooleanField(value, ["isStreaming", "is_streaming"]),
+  };
 }
 
 function parseEvmAddressField(

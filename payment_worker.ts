@@ -6,6 +6,7 @@ import {
 } from "./logging.js";
 import { incrementMetric } from "./metrics.js";
 import { createBullMqConnection, createFacilitator } from "./all_networks_shared.js";
+import { closeInferenceUsageTracker, recordInferenceUsage } from "./all_networks_usage.js";
 import {
   PAYMENT_QUEUE_NAME,
   SHUTDOWN_TIMEOUT_MS,
@@ -43,6 +44,24 @@ const worker = new Worker<PaymentSettlementJobData>(
       const amountValue = paymentAmountToMetricValue(paymentRequirements.amount);
       if (amountValue !== null) {
         incrementMetric("payment.settled.amount", tags, amountValue);
+      }
+
+      try {
+        await recordInferenceUsage(
+          job.data.usageMetadata
+            ? {
+                ...job.data.usageMetadata,
+                sessionId:
+                  job.data.usageMetadata.sessionId ?? (job.id ? String(job.id) : undefined),
+              }
+            : undefined,
+          result.payer,
+        );
+      } catch (error) {
+        console.error("[payment-worker] Failed to record inference usage", {
+          jobId: job.id,
+          ...summarizeError(error),
+        });
       }
     }
 
@@ -83,6 +102,7 @@ async function shutdown(signal: string): Promise<void> {
   forcedExitTimer.unref();
 
   await worker.close();
+  await closeInferenceUsageTracker();
 
   clearTimeout(forcedExitTimer);
   process.exit(0);
