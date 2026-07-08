@@ -8,7 +8,9 @@ import { incrementMetric } from "./metrics.js";
 import { createBullMqConnection, createFacilitator } from "./all_networks_shared.js";
 import { closeInferenceUsageTracker, recordInferenceUsage } from "./all_networks_usage.js";
 import {
+  isTerminalSettlementErrorReason,
   PAYMENT_QUEUE_NAME,
+  PAYMENT_SETTLEMENT_MAX_ATTEMPTS,
   SHUTDOWN_TIMEOUT_MS,
   type PaymentSettlementJobData,
 } from "./all_networks_types_helpers.js";
@@ -22,14 +24,51 @@ function paymentAmountToMetricValue(amount: string): number | null {
 
 const worker = new Worker<PaymentSettlementJobData>(
   PAYMENT_QUEUE_NAME,
-  async (job: { id?: string; data: PaymentSettlementJobData }) => {
+  async (job: { id?: string; attemptsMade?: number; data: PaymentSettlementJobData }) => {
     const { paymentPayload, paymentRequirements } = job.data;
     console.log("[payment-worker] Processing payment settlement job", {
       jobId: job.id,
+      attempt: (job.attemptsMade ?? 0) + 1,
+      maxAttempts: PAYMENT_SETTLEMENT_MAX_ATTEMPTS,
       ...summarizePaymentRequirements(paymentRequirements),
       ...summarizePaymentPayload(paymentPayload),
     });
     const result = await facilitator.settle(paymentPayload, paymentRequirements);
+
+    if (!result.success) {
+      const errorReason = result.errorReason || "unknown_settlement_error";
+      const terminal = isTerminalSettlementErrorReason(errorReason);
+      const failureTags = [
+        "worker:payment",
+        `network:${paymentRequirements.network}`,
+        `scheme:${paymentRequirements.scheme}`,
+        `reason:${errorReason}`,
+        `terminal:${terminal}`,
+      ];
+      incrementMetric("payment.settle.failure.count", failureTags);
+      console.error("[payment-worker] Payment settlement attempt failed", {
+        jobId: job.id,
+        attempt: (job.attemptsMade ?? 0) + 1,
+        maxAttempts: PAYMENT_SETTLEMENT_MAX_ATTEMPTS,
+        errorReason,
+        terminal,
+        ...summarizePaymentRequirements(paymentRequirements),
+        ...summarizePaymentPayload(paymentPayload),
+      });
+
+      if (!terminal) {
+        // Throw so BullMQ retries the job with the queue's attempts/backoff
+        // policy. Returning a success=false result here would silently
+        // complete the job and drop the payment on a transient failure.
+        throw new Error(`retryable_settlement_failure: ${errorReason}`);
+      }
+
+      // Terminal failure: retrying can never succeed (expired deadline,
+      // consumed nonce, invalid signature). Complete the job with the failed
+      // result so status pollers observe a terminal success=false outcome.
+      incrementMetric("payment.settle.terminal_failure.count", failureTags);
+      return result;
+    }
 
     if (result.success) {
       const tags = [

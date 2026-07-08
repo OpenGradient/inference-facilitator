@@ -64,6 +64,75 @@ export const DATA_INDIVIDUAL_SETTLEMENT_UPLOAD_ATTEMPTS = Number(
 export const DATA_INDIVIDUAL_SETTLEMENT_UPLOAD_RETRY_DELAY_MS = Number(
   process.env.DATA_INDIVIDUAL_SETTLEMENT_UPLOAD_RETRY_DELAY_MS || 10_000,
 );
+export const PAYMENT_SETTLEMENT_MAX_ATTEMPTS = Number(
+  process.env.PAYMENT_SETTLEMENT_MAX_ATTEMPTS || 8,
+);
+export const PAYMENT_SETTLEMENT_BACKOFF_DELAY_MS = Number(
+  process.env.PAYMENT_SETTLEMENT_BACKOFF_DELAY_MS || 5_000,
+);
+// Individual data-settlement jobs are safe to retry at the BullMQ level: the
+// transaction is pre-signed with a reserved nonce (idempotent — an
+// "already known" rebroadcast is tolerated and the reserved nonce is skipped
+// once consumed), and the Walrus upload verifies the blob id on re-upload.
+export const DATA_INDIVIDUAL_SETTLEMENT_JOB_ATTEMPTS = Number(
+  process.env.DATA_INDIVIDUAL_SETTLEMENT_JOB_ATTEMPTS || 5,
+);
+export const DATA_INDIVIDUAL_SETTLEMENT_JOB_BACKOFF_DELAY_MS = Number(
+  process.env.DATA_INDIVIDUAL_SETTLEMENT_JOB_BACKOFF_DELAY_MS || 10_000,
+);
+
+/**
+ * Settlement error reasons that can never succeed on retry: the payment
+ * payload itself is invalid or permanently unusable (expired deadline,
+ * consumed nonce, bad signature, mismatched requirements). Everything not in
+ * this set is treated as transient (RPC hiccups, gas, temporary balance or
+ * allowance gaps) and retried via the BullMQ job's attempts/backoff.
+ */
+const TERMINAL_SETTLEMENT_ERROR_REASONS = new Set<string>([
+  "unsupported_payload_type",
+  // upto scheme
+  "invalid_upto_evm_scheme",
+  "invalid_upto_evm_network_mismatch",
+  "invalid_upto_evm_payload_settlement_exceeds_amount",
+  "upto_amount_exceeds_permitted",
+  "upto_unauthorized_facilitator",
+  "upto_facilitator_mismatch",
+  // exact scheme
+  "invalid_exact_evm_scheme",
+  "invalid_exact_evm_network_mismatch",
+  "invalid_exact_evm_signature",
+  "invalid_exact_evm_payload_authorization_valid_before",
+  "invalid_exact_evm_authorization_value",
+  "invalid_exact_evm_nonce_already_used",
+  "invalid_exact_evm_token_name_mismatch",
+  "invalid_exact_evm_token_version_mismatch",
+  "invalid_exact_evm_eip3009_not_supported",
+  // permit2 (shared by exact + upto)
+  "permit2_deadline_expired",
+  "invalid_permit2_signature",
+  "invalid_permit2_spender",
+  "invalid_permit2_recipient_mismatch",
+  "permit2_amount_mismatch",
+  "permit2_token_mismatch",
+  "permit2_invalid_nonce",
+  "permit2_2612_amount_mismatch",
+  "permit2_invalid_amount",
+  "permit2_invalid_destination",
+  "permit2_invalid_owner",
+]);
+
+/**
+ * Decides whether a settlement failure is terminal (retrying can never help).
+ *
+ * @param errorReason - The errorReason string from a SettleResponse
+ * @returns True when the failure is permanent and the job must not be retried
+ */
+export function isTerminalSettlementErrorReason(errorReason: string | undefined): boolean {
+  if (!errorReason) {
+    return false;
+  }
+  return TERMINAL_SETTLEMENT_ERROR_REASONS.has(errorReason);
+}
 
 export type SettlementType = "private" | "batch" | "individual";
 

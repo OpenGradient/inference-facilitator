@@ -21,6 +21,8 @@ import {
 } from "./all_networks_shared.js";
 import {
   base64ToBytesCalldata,
+  DATA_INDIVIDUAL_SETTLEMENT_JOB_ATTEMPTS,
+  DATA_INDIVIDUAL_SETTLEMENT_JOB_BACKOFF_DELAY_MS,
   DATA_SETTLEMENT_BATCH_QUEUE_NAME,
   DATA_SETTLEMENT_INDIVIDUAL_QUEUE_NAME,
   getRequiredStringField,
@@ -30,6 +32,8 @@ import {
   PAYMENT_QUEUE_NAME,
   parseInferenceUsageMetadata,
   parseSettlementJobDataFromHeaders,
+  PAYMENT_SETTLEMENT_BACKOFF_DELAY_MS,
+  PAYMENT_SETTLEMENT_MAX_ATTEMPTS,
   PORT,
   settlementStatusFromBullState,
   SHUTDOWN_TIMEOUT_MS,
@@ -203,6 +207,15 @@ async function enqueuePaymentSettlementJob(args: {
     },
     {
       jobId: paymentJobId,
+      // Retry transient settlement failures (the worker throws on them);
+      // terminal failures complete the job with success=false and are not
+      // retried. A single attempt would silently drop payments on any RPC
+      // or gas hiccup.
+      attempts: PAYMENT_SETTLEMENT_MAX_ATTEMPTS,
+      backoff: {
+        type: "exponential",
+        delay: PAYMENT_SETTLEMENT_BACKOFF_DELAY_MS,
+      },
     },
   );
 
@@ -247,6 +260,14 @@ async function enqueueDataSettlementJob(args: {
       },
       {
         jobId: settlementJobId,
+        // Safe to retry: pre-signed tx with a reserved nonce is idempotent and
+        // the Walrus upload is verified on re-upload. Without this a transient
+        // RPC/upload failure would drop the on-chain hash record entirely.
+        attempts: DATA_INDIVIDUAL_SETTLEMENT_JOB_ATTEMPTS,
+        backoff: {
+          type: "exponential",
+          delay: DATA_INDIVIDUAL_SETTLEMENT_JOB_BACKOFF_DELAY_MS,
+        },
       },
     );
 
@@ -267,6 +288,10 @@ async function enqueueDataSettlementJob(args: {
     "batch-data-settlement",
     parsedSettlementHeader,
     {
+      // Intentionally single-attempt: the batch worker appends the item to an
+      // in-memory buffer on entry, so a BullMQ retry would duplicate the
+      // Merkle leaf. Retry lives in the worker instead — a failed on-chain
+      // flush retains the buffer and re-flushes via idle/max-age timers.
       jobId: settlementJobId,
     },
   );
