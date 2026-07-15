@@ -20,6 +20,34 @@ function paymentAmountToMetricValue(amount: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function metricTagValue(value: string | undefined, fallback = "unknown"): string {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) {
+    return fallback;
+  }
+
+  return normalized.replace(/[^a-z0-9_.:-]+/g, "_").slice(0, 100) || fallback;
+}
+
+function paymentSettlementTags(
+  paymentRequirements: PaymentSettlementJobData["paymentRequirements"],
+): string[] {
+  return [
+    "worker:payment",
+    `network:${metricTagValue(paymentRequirements.network)}`,
+    `asset:${metricTagValue(paymentRequirements.asset)}`,
+    `scheme:${metricTagValue(paymentRequirements.scheme)}`,
+  ];
+}
+
+function settlementFailureReason(errorReason: unknown): string {
+  if (typeof errorReason !== "string") {
+    return "unknown";
+  }
+
+  return metricTagValue(errorReason.split(":")[0], "unknown");
+}
+
 const worker = new Worker<PaymentSettlementJobData>(
   PAYMENT_QUEUE_NAME,
   async (job: { id?: string; data: PaymentSettlementJobData }) => {
@@ -30,15 +58,9 @@ const worker = new Worker<PaymentSettlementJobData>(
       ...summarizePaymentPayload(paymentPayload),
     });
     const result = await facilitator.settle(paymentPayload, paymentRequirements);
+    const tags = paymentSettlementTags(paymentRequirements);
 
     if (result.success) {
-      const tags = [
-        "worker:payment",
-        `network:${paymentRequirements.network}`,
-        `asset:${paymentRequirements.asset}`,
-        `scheme:${paymentRequirements.scheme}`,
-      ];
-
       incrementMetric("payment.settled.count", tags);
 
       const amountValue = paymentAmountToMetricValue(paymentRequirements.amount);
@@ -62,6 +84,14 @@ const worker = new Worker<PaymentSettlementJobData>(
           jobId: job.id,
           ...summarizeError(error),
         });
+      }
+    } else {
+      const reason = settlementFailureReason(result.errorReason);
+      const failureTags = [...tags, `reason:${reason}`];
+      incrementMetric("payment.settlement.failed.count", failureTags);
+
+      if (reason.startsWith("invalid_exact_evm")) {
+        incrementMetric("payment.settlement.invalid_evm.count", failureTags);
       }
     }
 
