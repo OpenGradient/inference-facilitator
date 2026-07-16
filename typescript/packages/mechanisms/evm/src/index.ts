@@ -36,6 +36,46 @@ export { UptoEvmScheme } from "./upto";
 export type { UptoPermit2Payload, UptoPermit2Witness, UptoPermit2Authorization } from "./types";
 export { isUptoPermit2Payload } from "./types";
 
+// Batch-settlement shared types
+export type {
+  AuthorizerSigner,
+  ChannelConfig,
+  ChannelState,
+  BatchSettlementDepositPayload,
+  BatchSettlementVoucherPayload,
+  BatchSettlementRefundPayload,
+  BatchSettlementVoucherFields,
+  BatchSettlementErc3009Authorization,
+  BatchSettlementPermit2Authorization,
+  BatchSettlementDepositAuthorization,
+  BatchSettlementAssetTransferMethod,
+  BatchSettlementClaimPayload,
+  BatchSettlementEnrichedRefundPayload,
+  BatchSettlementVoucherClaim,
+  BatchSettlementPayload,
+  BatchSettlementSettlePayload,
+  BatchSettlementFacilitatorSettlePayload,
+  BatchSettlementPaymentRequirementsExtra,
+  BatchSettlementPaymentResponseExtra,
+} from "./types";
+export {
+  isBatchSettlementDepositPayload,
+  isBatchSettlementVoucherPayload,
+  isBatchSettlementRefundPayload,
+  isBatchSettlementClaimPayload,
+  isBatchSettlementSettlePayload,
+  isBatchSettlementEnrichedRefundPayload,
+} from "./types";
+export {
+  BATCH_SETTLEMENT_ADDRESS,
+  BATCH_SETTLEMENT_SCHEME,
+  ERC3009_DEPOSIT_COLLECTOR_ADDRESS,
+  BATCH_SETTLEMENT_DOMAIN,
+  voucherTypes,
+  refundTypes,
+  claimBatchTypes,
+} from "./batch-settlement/constants";
+
 // Constants
 export {
   PERMIT2_ADDRESS,

@@ -4,7 +4,8 @@ import {
   createErc20ApprovalGasSponsoringExtension,
   type Erc20ApprovalGasSponsoringSigner,
 } from "@x402/extensions";
-import { toFacilitatorEvmSigner, type FacilitatorEvmSigner } from "@x402/evm";
+import { toFacilitatorEvmSigner, type AuthorizerSigner, type FacilitatorEvmSigner } from "@x402/evm";
+import { BatchSettlementEvmScheme } from "@x402/evm/batch-settlement/facilitator";
 import { ExactEvmScheme } from "@x402/evm/exact/facilitator";
 import { UptoEvmScheme } from "@x402/evm/upto/facilitator";
 import { StandardMerkleTree } from "@openzeppelin/merkle-tree";
@@ -1277,6 +1278,21 @@ export async function createFacilitator(): Promise<x402Facilitator> {
     const evmAccount = privateKeyToAccount(evmPrivateKey);
     console.info(`EVM Facilitator account: ${evmAccount.address}`);
 
+    // Batch settlement needs a receiver authorizer to sign claim/refund EIP-712
+    // messages. A dedicated key can be configured; using the facilitator key as
+    // the fallback preserves the existing single-key deployment configuration.
+    const receiverAuthorizerPrivateKey = (process.env.BATCH_SETTLEMENT_RECEIVER_AUTHORIZER_PRIVATE_KEY ||
+      evmPrivateKey) as `0x${string}`;
+    const receiverAuthorizerAccount = privateKeyToAccount(receiverAuthorizerPrivateKey);
+    const receiverAuthorizerSigner: AuthorizerSigner = {
+      address: receiverAuthorizerAccount.address,
+      signTypedData: params =>
+        receiverAuthorizerAccount.signTypedData(
+          params as Parameters<typeof receiverAuthorizerAccount.signTypedData>[0],
+        ),
+    };
+    console.info(`Batch receiver authorizer: ${receiverAuthorizerSigner.address}`);
+
     const viemClient = createWalletClient({
       account: evmAccount,
       chain: ogEvm,
@@ -1310,11 +1326,12 @@ export async function createFacilitator(): Promise<x402Facilitator> {
         message: Record<string, unknown>;
         signature: `0x${string}`;
       }) => viemClient.verifyTypedData(args as never),
-      writeContract: (args: {
+      writeContract: ({ dataSuffix: _dataSuffix, ...args }: {
         address: `0x${string}`;
         abi: readonly unknown[];
         functionName: string;
         args: readonly unknown[];
+        dataSuffix?: `0x${string}`;
       }) =>
         viemClient.writeContract({
           ...args,
@@ -1353,11 +1370,12 @@ export async function createFacilitator(): Promise<x402Facilitator> {
         message: Record<string, unknown>;
         signature: `0x${string}`;
       }) => baseViemClient.verifyTypedData(args as never),
-      writeContract: (args: {
+      writeContract: ({ dataSuffix: _dataSuffix, ...args }: {
         address: `0x${string}`;
         abi: readonly unknown[];
         functionName: string;
         args: readonly unknown[];
+        dataSuffix?: `0x${string}`;
       }) =>
         baseViemClient.writeContract({
           ...args,
@@ -1403,6 +1421,10 @@ export async function createFacilitator(): Promise<x402Facilitator> {
       new ExactEvmScheme(baseEvmSigner, { deployERC4337WithEIP6492: true }),
     );
     facilitator.register(BASE_MAINNET_NETWORK, new UptoEvmScheme(baseEvmSigner));
+    facilitator.register(
+      BASE_MAINNET_NETWORK,
+      new BatchSettlementEvmScheme(baseEvmSigner, receiverAuthorizerSigner),
+    );
 
     facilitator
       .registerExtension(EIP2612_GAS_SPONSORING)

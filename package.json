@@ -23,7 +23,7 @@
   },
   "dependencies": {
     "@openzeppelin/merkle-tree": "^1.0.8",
-    "@mysten/sui": "^1.38.0",
+    "@mysten/sui": "1.37.6",
     "@mysten/walrus": "^0.6.7",
     "@mysten/walrus-wasm": "^0.1.1",
     "@x402/core": "workspace:*",

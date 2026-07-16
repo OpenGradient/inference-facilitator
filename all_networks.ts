@@ -43,7 +43,11 @@ import {
   type PaymentSettlementJobData,
   type SettlementApiJobResponse,
 } from "./all_networks_types_helpers.js";
-import { closeInferenceUsageTracker, getInferenceUsageStats } from "./all_networks_usage.js";
+import {
+  closeInferenceUsageTracker,
+  getInferenceUsageStats,
+  recordInferenceUsage,
+} from "./all_networks_usage.js";
 import {
   type PaymentPayload,
   type PaymentRequirements,
@@ -188,32 +192,44 @@ async function toJobResponse(
   return response;
 }
 
-async function enqueuePaymentSettlementJob(args: {
-  paymentPayload: PaymentPayload;
-  paymentRequirements: PaymentRequirements;
-  usageMetadata?: InferenceUsageMetadata;
-}): Promise<SettlementApiJobResponse> {
-  const paymentJobId = `payment-${randomUUID()}`;
-  const paymentJob = await paymentQueue.add(
-    "payment-settlement",
-    {
-      paymentPayload: args.paymentPayload,
-      paymentRequirements: args.paymentRequirements,
-      usageMetadata: args.usageMetadata,
-    },
-    {
-      jobId: paymentJobId,
-    },
-  );
+function paymentMetricTags(paymentRequirements: PaymentRequirements): string[] {
+  const tagValue = (value: string | undefined, fallback = "unknown") => {
+    const normalized = value?.trim().toLowerCase();
+    if (!normalized) {
+      return fallback;
+    }
+    return normalized.replace(/[^a-z0-9_.:-]+/g, "_").slice(0, 100) || fallback;
+  };
+  return [
+    "worker:payment",
+    `network:${tagValue(paymentRequirements.network)}`,
+    `asset:${tagValue(paymentRequirements.asset)}`,
+    `scheme:${tagValue(paymentRequirements.scheme)}`,
+  ];
+}
 
-  console.log("[api] Payment settlement job enqueued", {
-    jobId: paymentJobId,
-    hasUsageMetadata: Boolean(args.usageMetadata),
-    ...summarizePaymentRequirements(args.paymentRequirements),
-    ...summarizePaymentPayload(args.paymentPayload),
-  });
-
-  return toJobResponse(PAYMENT_QUEUE_NAME, paymentJob);
+function recordPaymentSettlementMetrics(
+  paymentRequirements: PaymentRequirements,
+  result: { success: boolean; errorReason?: string; amount?: string },
+): void {
+  const tags = paymentMetricTags(paymentRequirements);
+  if (result.success) {
+    incrementMetric("payment.settled.count", tags);
+    const amount = Number(paymentRequirements.amount);
+    if (Number.isFinite(amount)) {
+      incrementMetric("payment.settled.amount", tags, amount);
+    }
+    return;
+  }
+  const reason =
+    typeof result.errorReason === "string"
+      ? result.errorReason.split(":")[0].replace(/[^a-z0-9_.:-]+/gi, "_").toLowerCase()
+      : "unknown";
+  const failureTags = [...tags, `reason:${reason || "unknown"}`];
+  incrementMetric("payment.settlement.failed.count", failureTags);
+  if (reason.startsWith("invalid_exact_evm")) {
+    incrementMetric("payment.settlement.invalid_evm.count", failureTags);
+  }
 }
 
 async function enqueueDataSettlementJob(args: {
@@ -344,12 +360,30 @@ app.post("/settle", async (req, res) => {
     });
     debugLog("[api][debug] /settle request body", req.body);
 
-    const paymentJob = await enqueuePaymentSettlementJob({
-      paymentPayload,
-      paymentRequirements,
-      usageMetadata,
+    // x402 clients must receive the concrete settlement result in this HTTP
+    // response so they can commit the voucher/channel state. Inference usage
+    // accounting remains asynchronous below; it never blocks the x402 receipt.
+    const result = await facilitator.settle(paymentPayload, paymentRequirements);
+    recordPaymentSettlementMetrics(paymentRequirements, result);
+
+    if (result.success && usageMetadata) {
+      const usageSessionId = usageMetadata.sessionId ?? `payment-${randomUUID()}`;
+      void recordInferenceUsage(
+        { ...usageMetadata, sessionId: usageSessionId },
+        result.payer,
+      ).catch(error => {
+        console.error("[api] Failed to record inference usage", summarizeError(error));
+      });
+    }
+
+    console.log("[api] /settle request completed", {
+      ...summarizePaymentRequirements(paymentRequirements),
+      success: result.success,
+      transaction: result.transaction,
+      errorReason: result.success ? undefined : result.errorReason,
     });
-    return res.status(202).json({ paymentJob });
+    debugLog("[api][debug] /settle response", result);
+    return res.json(result);
   } catch (error) {
     console.error("[api] /settle request failed", summarizeError(error));
     if (isSettlementError(error)) {

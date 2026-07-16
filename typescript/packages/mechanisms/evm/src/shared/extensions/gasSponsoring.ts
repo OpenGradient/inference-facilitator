@@ -1,36 +1,27 @@
-import { PaymentRequirements, PaymentPayloadResult, PaymentPayloadContext } from "@x402/core/types";
-import { EIP2612_GAS_SPONSORING_KEY, ERC20_APPROVAL_GAS_SPONSORING_KEY } from "../exact/extensions";
+import type {
+  PaymentRequirements,
+  PaymentPayloadResult,
+  PaymentPayloadContext,
+} from "@x402/core/types";
+import {
+  EIP2612_GAS_SPONSORING_KEY,
+  ERC20_APPROVAL_GAS_SPONSORING_KEY,
+} from "../../exact/extensions";
 import { getAddress } from "viem";
-import { PERMIT2_ADDRESS, erc20AllowanceAbi } from "../constants";
-import { getEvmChainId } from "../utils";
-import { ClientEvmSigner } from "../signer";
-import { signEip2612Permit } from "../exact/client/eip2612";
-import { signErc20ApprovalTransaction } from "../exact/client/erc20approval";
-import { resolveExtensionRpcCapabilities, type ExactEvmSchemeOptions } from "./rpc";
+import { PERMIT2_ADDRESS, erc20AllowanceAbi } from "../../constants";
+import { getEvmChainId } from "../../utils";
+import { ClientEvmSigner } from "../../signer";
+import { signEip2612Permit } from "../../exact/client/eip2612";
+import { signErc20ApprovalTransaction } from "../../exact/client/erc20approval";
+import { resolveExtensionRpcCapabilities, type ExactEvmSchemeOptions } from "../rpc";
 
-export {
-  BUILDER_CODE_KEY,
-  resolveDataSuffix,
-  appendDataSuffix,
-} from "./extensions/index";
-export type { DataSuffixContext, BuilderCodeFacilitatorExtension } from "./extensions/index";
-
-/**
- * Attempts to sign an EIP-2612 permit for gasless Permit2 approval.
- *
- * @param signer - The EVM client signer
- * @param options - Optional RPC configuration for backfilling capabilities
- * @param requirements - The payment requirements from the server
- * @param result - The payment payload result from the scheme
- * @param context - Optional context containing server extensions and metadata
- * @returns Extension data for EIP-2612 gas sponsoring, or undefined if not applicable
- */
 export async function trySignEip2612PermitExtension(
   signer: ClientEvmSigner,
   options: ExactEvmSchemeOptions | undefined,
   requirements: PaymentRequirements,
   result: PaymentPayloadResult,
   context?: PaymentPayloadContext,
+  approvalAmount?: string,
 ): Promise<Record<string, unknown> | undefined> {
   const capabilities = resolveExtensionRpcCapabilities(requirements.network, signer, options);
 
@@ -50,6 +41,7 @@ export async function trySignEip2612PermitExtension(
 
   const chainId = getEvmChainId(requirements.network);
   const tokenAddress = getAddress(requirements.asset) as `0x${string}`;
+  const requiredAllowance = approvalAmount ?? requirements.amount;
 
   try {
     const allowance = (await capabilities.readContract({
@@ -59,11 +51,11 @@ export async function trySignEip2612PermitExtension(
       args: [signer.address, PERMIT2_ADDRESS],
     })) as bigint;
 
-    if (allowance >= BigInt(requirements.amount)) {
+    if (allowance >= BigInt(requiredAllowance)) {
       return undefined;
     }
   } catch {
-    // Allowance check failed, proceed with signing
+    // Allowance check failed, proceed with signing.
   }
 
   const permit2Auth = result.payload?.permit2Authorization as Record<string, unknown> | undefined;
@@ -82,7 +74,7 @@ export async function trySignEip2612PermitExtension(
     tokenVersion,
     chainId,
     deadline,
-    requirements.amount,
+    requiredAllowance,
   );
 
   return {
@@ -90,20 +82,12 @@ export async function trySignEip2612PermitExtension(
   };
 }
 
-/**
- * Attempts to sign an ERC-20 approval transaction for gasless Permit2 approval.
- *
- * @param signer - The EVM client signer
- * @param options - Optional RPC configuration for backfilling capabilities
- * @param requirements - The payment requirements from the server
- * @param context - Optional context containing server extensions and metadata
- * @returns Extension data for ERC-20 approval gas sponsoring, or undefined if not applicable
- */
 export async function trySignErc20ApprovalExtension(
   signer: ClientEvmSigner,
   options: ExactEvmSchemeOptions | undefined,
   requirements: PaymentRequirements,
   context?: PaymentPayloadContext,
+  approvalAmount?: string,
 ): Promise<Record<string, unknown> | undefined> {
   const capabilities = resolveExtensionRpcCapabilities(requirements.network, signer, options);
 
@@ -121,6 +105,7 @@ export async function trySignErc20ApprovalExtension(
 
   const chainId = getEvmChainId(requirements.network);
   const tokenAddress = getAddress(requirements.asset) as `0x${string}`;
+  const requiredAllowance = approvalAmount ?? requirements.amount;
 
   try {
     const allowance = (await capabilities.readContract({
@@ -130,11 +115,11 @@ export async function trySignErc20ApprovalExtension(
       args: [signer.address, PERMIT2_ADDRESS],
     })) as bigint;
 
-    if (allowance >= BigInt(requirements.amount)) {
+    if (allowance >= BigInt(requiredAllowance)) {
       return undefined;
     }
   } catch {
-    // Allowance check failed, proceed with signing
+    // Allowance check failed, proceed with signing.
   }
 
   const info = await signErc20ApprovalTransaction(
