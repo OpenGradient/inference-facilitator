@@ -109,6 +109,37 @@ export type UptoPermit2Payload = {
   };
 };
 
+// Batch-settlement EVM scheme payload types
+export type {
+  AuthorizerSigner,
+  ChannelConfig,
+  ChannelState,
+  BatchSettlementDepositPayload,
+  BatchSettlementVoucherPayload,
+  BatchSettlementRefundPayload,
+  BatchSettlementVoucherFields,
+  BatchSettlementErc3009Authorization,
+  BatchSettlementPermit2Authorization,
+  BatchSettlementDepositAuthorization,
+  BatchSettlementAssetTransferMethod,
+  BatchSettlementClaimPayload,
+  BatchSettlementEnrichedRefundPayload,
+  BatchSettlementVoucherClaim,
+  BatchSettlementPayload,
+  BatchSettlementSettlePayload,
+  BatchSettlementFacilitatorSettlePayload,
+  BatchSettlementPaymentRequirementsExtra,
+  BatchSettlementPaymentResponseExtra,
+} from "./batch-settlement/types";
+export {
+  isBatchSettlementDepositPayload,
+  isBatchSettlementVoucherPayload,
+  isBatchSettlementRefundPayload,
+  isBatchSettlementClaimPayload,
+  isBatchSettlementSettlePayload,
+  isBatchSettlementEnrichedRefundPayload,
+} from "./batch-settlement/types";
+
 /**
  * Type guard to check if a payload is an upto Permit2 payload.
  * Validates structural presence of all required fields: signature, permit2Authorization
